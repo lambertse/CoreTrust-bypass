@@ -1,10 +1,10 @@
-#ifndef MOCHA_TEMPLATE_H
-#define MOCHA_TEMPLATE_H
+#ifndef CT_BYPASS_TEMPLATE_H
+#define CT_BYPASS_TEMPLATE_H
 
 #include <cstddef>
 #include <cstdint>
 
-namespace mocha::templates {
+namespace ct_bypass::templates {
 
 // Non-owning view of a static byte blob.
 struct ByteView {
@@ -31,6 +31,6 @@ ByteView ca_private_key();
 // DER template for the CDHashes attribute; see kCdHashesDer* for its layout.
 ByteView cd_hashes_der();
 
-}  // namespace mocha::templates
+}  // namespace ct_bypass::templates
 
-#endif  // MOCHA_TEMPLATE_H
+#endif  // CT_BYPASS_TEMPLATE_H

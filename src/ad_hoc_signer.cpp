@@ -16,7 +16,7 @@
 #include "security_spi.h"
 #include "utils.h"
 
-namespace mocha {
+namespace ct_bypass {
 namespace {
 
 struct SignerFunctions {
@@ -209,4 +209,4 @@ AdHocSigner::Ptr AdHocSigner::create(const std::string& path,
 
 ReturnCode AdHocSigner::sign() { return impl_->sign(); }
 
-}  // namespace mocha
+}  // namespace ct_bypass

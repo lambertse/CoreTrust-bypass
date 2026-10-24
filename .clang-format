@@ -1,4 +1,3 @@
----
 # Google C++ Style Guide formatting: https://google.github.io/styleguide/cppguide.html
 BasedOnStyle: Google
 Language: Cpp
@@ -7,4 +6,3 @@ Standard: c++17
 # Google derives pointer alignment from the file by default; pin it so output is deterministic
 DerivePointerAlignment: false
 PointerAlignment: Left
-...

@@ -2,7 +2,7 @@
 
 #include <string>
 
-namespace mocha {
+namespace ct_bypass {
 
 class CoreTrustBypassImpl {
  public:
@@ -27,4 +27,4 @@ CoreTrustBypass::Ptr CoreTrustBypass::create(const std::string& path) {
 
 ReturnCode CoreTrustBypass::bypass() { return impl_->bypass(); }
 
-}  // namespace mocha
+}  // namespace ct_bypass

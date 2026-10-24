@@ -1,5 +1,5 @@
-#ifndef MOCHA_SECURITY_SPI_H
-#define MOCHA_SECURITY_SPI_H
+#ifndef CT_BYPASS_SECURITY_SPI_H
+#define CT_BYPASS_SECURITY_SPI_H
 
 // Private Security.framework interfaces (from Apple's Security sources,
 // SecCodeSigner.h). These are not in the public SDK headers.
@@ -16,7 +16,7 @@ typedef OSStatus (*SecCodeSignerAddSignatureWithErrorsFn)(SecCodeSignerRef signe
 }  // extern "C"
 // clang-format on
 
-namespace mocha::spi {
+namespace ct_bypass::spi {
 
 // SecCodeSignerCreate parameter keys.
 inline const CFStringRef kSecCodeSignerEntitlements = CFSTR("entitlements");
@@ -40,6 +40,6 @@ typedef CF_OPTIONS(uint32_t, SecPreserveFlags) {
 // Magic of an embedded entitlements blob (CSMAGIC_EMBEDDED_ENTITLEMENTS).
 inline constexpr uint32_t kEntitlementsBlobMagic = 0xFADE7171;
 
-}  // namespace mocha::spi
+}  // namespace ct_bypass::spi
 
-#endif  // MOCHA_SECURITY_SPI_H
+#endif  // CT_BYPASS_SECURITY_SPI_H

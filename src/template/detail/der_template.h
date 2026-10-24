@@ -1,9 +1,9 @@
-#ifndef MOCHA_DER_TEMPLATE_H
-#define MOCHA_DER_TEMPLATE_H
+#ifndef CT_BYPASS_DER_TEMPLATE_H
+#define CT_BYPASS_DER_TEMPLATE_H
 
 #include <cstdint>
 
-namespace mocha::detail {
+namespace ct_bypass::detail {
 
 // clang-format off
 /*
@@ -37,6 +37,6 @@ static constexpr uint8_t cd_hashes_DER_template[] = {
 };
 // clang-format on
 
-}  // namespace mocha::detail
+}  // namespace ct_bypass::detail
 
-#endif  // MOCHA_DER_TEMPLATE_H
+#endif  // CT_BYPASS_DER_TEMPLATE_H

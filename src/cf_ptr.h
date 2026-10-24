@@ -1,12 +1,12 @@
-#ifndef MOCHA_CF_PTR_H
-#define MOCHA_CF_PTR_H
+#ifndef CT_BYPASS_CF_PTR_H
+#define CT_BYPASS_CF_PTR_H
 
 #include <CoreFoundation/CoreFoundation.h>
 
 #include <memory>
 #include <type_traits>
 
-namespace mocha {
+namespace ct_bypass {
 
 // Releases a CoreFoundation object when the owning CFPtr goes out of scope.
 struct CFDeleter {
@@ -25,6 +25,6 @@ CFPtr<Ref> cf_retain(Ref ref) {
   return CFPtr<Ref>(static_cast<Ref>(const_cast<void*>(CFRetain(ref))));
 }
 
-}  // namespace mocha
+}  // namespace ct_bypass
 
-#endif  // MOCHA_CF_PTR_H
+#endif  // CT_BYPASS_CF_PTR_H

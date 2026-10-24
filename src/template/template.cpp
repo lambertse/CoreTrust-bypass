@@ -4,7 +4,7 @@
 #include "detail/ca_details.h"
 #include "detail/der_template.h"
 
-namespace mocha::templates {
+namespace ct_bypass::templates {
 namespace {
 
 // The *_len constants are generated alongside the arrays; make sure they agree.
@@ -46,4 +46,4 @@ ByteView ca_private_key() { return view(detail::CA_key); }
 
 ByteView cd_hashes_der() { return view(detail::cd_hashes_DER_template); }
 
-}  // namespace mocha::templates
+}  // namespace ct_bypass::templates

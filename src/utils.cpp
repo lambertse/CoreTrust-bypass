@@ -5,7 +5,7 @@
 #include <filesystem>
 #include <vector>
 
-namespace mocha::utils {
+namespace ct_bypass::utils {
 
 std::string cf_description(CFTypeRef obj) {
   if (!obj) return "(null)";
@@ -32,4 +32,4 @@ CFPtr<CFURLRef> create_file_url(const std::string& path) {
       static_cast<CFIndex>(abs.size()), false));
 }
 
-}  // namespace mocha::utils
+}  // namespace ct_bypass::utils

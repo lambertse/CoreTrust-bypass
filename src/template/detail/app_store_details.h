@@ -1,6 +1,6 @@
-#ifndef MOCHA_APP_STORE_DETAILS_H
-#define MOCHA_APP_STORE_DETAILS_H
-namespace mocha::detail {
+#ifndef CT_BYPASS_APP_STORE_DETAILS_H
+#define CT_BYPASS_APP_STORE_DETAILS_H
+namespace ct_bypass::detail {
 static constexpr unsigned char app_store_cd[] = {
     0xfa, 0xde, 0x0c, 0x02, 0x00, 0x00, 0x7e, 0xd5, 0x00, 0x02, 0x05, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f, 0xf1, 0x00, 0x00, 0x00, 0x60,
@@ -3081,5 +3081,5 @@ static constexpr unsigned char app_store_signature_blob[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
 static constexpr unsigned int app_store_signature_blob_len = 4398;
-}  // namespace mocha::detail
-#endif  // MOCHA_APP_STORE_DETAILS_H
+}  // namespace ct_bypass::detail
+#endif  // CT_BYPASS_APP_STORE_DETAILS_H
