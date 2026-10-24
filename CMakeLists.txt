@@ -13,6 +13,7 @@ find_library(SECURITY_FRAMEWORK Security REQUIRED)
 
 add_library(${PROJECT_NAME} SHARED
   src/ad_hoc_signer.cpp
+  src/coretrust_bypass.cpp
   src/template/template.cpp
   src/utils.cpp
 )

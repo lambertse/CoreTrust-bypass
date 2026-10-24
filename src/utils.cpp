@@ -2,7 +2,7 @@
 
 #include <unistd.h>
 
-#include <climits>
+#include <filesystem>
 #include <vector>
 
 namespace mocha::utils {
@@ -24,16 +24,12 @@ std::string cf_description(CFTypeRef obj) {
   return std::string(buf.data());
 }
 
-CFPtr<CFURLRef> create_file_url(const char* path) {
-  std::string full_path(path ? path : "");
-  if (full_path.empty() || full_path[0] != '/') {
-    char cwd[PATH_MAX];
-    if (getcwd(cwd, sizeof(cwd)))
-      full_path = std::string(cwd) + "/" + full_path;
-  }
+CFPtr<CFURLRef> create_file_url(const std::string& path) {
+  const auto abs = std::filesystem::absolute(path).string();
+
   return CFPtr<CFURLRef>(CFURLCreateFromFileSystemRepresentation(
-      kCFAllocatorDefault, reinterpret_cast<const UInt8*>(full_path.c_str()),
-      static_cast<CFIndex>(full_path.size()), false));
+      kCFAllocatorDefault, reinterpret_cast<const UInt8*>(abs.c_str()),
+      static_cast<CFIndex>(abs.size()), false));
 }
 
 }  // namespace mocha::utils

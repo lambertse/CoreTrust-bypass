@@ -153,7 +153,7 @@ OSStatus check_signing_information(SecStaticCodeRef code) {
 
 class AdHocSignerImpl {
  public:
-  AdHocSignerImpl(const char* path, bool preserve_metadata,
+  AdHocSignerImpl(const std::string& path, bool preserve_metadata,
                   CFDictionaryRef custom_entitlements)
       : path_(path),
         preserve_metadata_(preserve_metadata),
@@ -194,14 +194,15 @@ ReturnCode AdHocSignerImpl::sign() const {
   return ReturnCode::kOk;
 }
 
-AdHocSigner::AdHocSigner(const char* path, bool preserve_metadata,
+AdHocSigner::AdHocSigner(const std::string& path, bool preserve_metadata,
                          CFDictionaryRef custom_entitlements)
     : impl_(std::make_unique<AdHocSignerImpl>(path, preserve_metadata,
                                               custom_entitlements)) {}
 
 AdHocSigner::~AdHocSigner() = default;
 
-AdHocSigner::Ptr AdHocSigner::create(const char* path, bool preserve_metadata,
+AdHocSigner::Ptr AdHocSigner::create(const std::string& path,
+                                     bool preserve_metadata,
                                      CFDictionaryRef custom_entitlements) {
   return Ptr(new AdHocSigner(path, preserve_metadata, custom_entitlements));
 }

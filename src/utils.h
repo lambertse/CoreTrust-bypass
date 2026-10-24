@@ -14,7 +14,7 @@ std::string cf_description(CFTypeRef obj);
 
 // Creates a file URL for `path`, resolving relative paths against the
 // current working directory.
-CFPtr<CFURLRef> create_file_url(const char* path);
+CFPtr<CFURLRef> create_file_url(const std::string& path);
 
 }  // namespace mocha::utils
 
