@@ -38,3 +38,9 @@ target_link_libraries(${PROJECT_NAME}
   PUBLIC  ${COREFOUNDATION_FRAMEWORK}
   PRIVATE ${SECURITY_FRAMEWORK}
 )
+
+option(CT_BYPASS_BUILD_TESTS "Build the unit tests" ON)
+if(CT_BYPASS_BUILD_TESTS)
+  enable_testing()
+  add_subdirectory(test)
+endif()
