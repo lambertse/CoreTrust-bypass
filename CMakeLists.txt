@@ -15,6 +15,8 @@ add_library(${PROJECT_NAME} SHARED
   src/ad_hoc_signer.cpp
   src/coretrust_bypass.cpp
   src/template/template.cpp
+  src/macho/macho.cpp
+  src/macho/cs_blob.cpp
   src/utils.cpp
 )
 
