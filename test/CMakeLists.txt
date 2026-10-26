@@ -91,3 +91,88 @@ target_link_libraries(
     PRIVATE
         OpenSSL::Crypto
 )
+
+#
+# Mach-O helper tests
+#
+add_component_test(
+    digest_test
+    macho/digest_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/macho/digest.cpp
+)
+
+target_link_libraries(
+    digest_test
+    PRIVATE
+        OpenSSL::Crypto
+)
+
+add_component_test(
+    macho_utils_test
+    macho/utils_test.cpp
+)
+
+#
+# Template tests
+#
+add_component_test(
+    template_test
+    template/template_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/template/template.cpp
+    ${PROJECT_SOURCE_DIR}/src/macho/cs_blob.cpp
+    ${PROJECT_SOURCE_DIR}/src/macho/digest.cpp
+)
+
+target_link_libraries(
+    template_test
+    PRIVATE
+        OpenSSL::Crypto
+)
+
+#
+# CoreFoundation helper tests
+#
+add_component_test(
+    cf_ptr_test
+    cf_ptr_test.cpp
+)
+
+add_component_test(
+    utils_test
+    utils_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/utils.cpp
+)
+
+#
+# Ad-hoc signer tests
+#
+find_program(CODESIGN_EXECUTABLE codesign REQUIRED)
+
+# A normally signed executable for the tests to re-sign, with a known identifier
+add_executable(ad_hoc_signer_fixture ad_hoc_signer_fixture.cpp)
+add_custom_command(
+    TARGET ad_hoc_signer_fixture
+    POST_BUILD
+    COMMAND ${CODESIGN_EXECUTABLE} --force --sign -
+            --identifier com.ct-bypass.ad-hoc-signer-fixture
+            $<TARGET_FILE:ad_hoc_signer_fixture>
+)
+
+add_component_test(
+    ad_hoc_signer_test
+    ad_hoc_signer_test.cpp
+)
+
+add_dependencies(ad_hoc_signer_test ad_hoc_signer_fixture)
+
+target_link_libraries(
+    ad_hoc_signer_test
+    PRIVATE
+        ${SECURITY_FRAMEWORK}
+)
+
+target_compile_definitions(
+    ad_hoc_signer_test
+    PRIVATE
+        AD_HOC_SIGNER_FIXTURE_PATH="$<TARGET_FILE:ad_hoc_signer_fixture>"
+)
