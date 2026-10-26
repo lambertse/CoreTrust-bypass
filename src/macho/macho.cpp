@@ -1,5 +1,6 @@
 #include "macho.h"
 #include "cs_blob.h"
+#include "utils.h"
 
 #include <sys/sysctl.h>
 #include <sys/utsname.h>
@@ -18,9 +19,6 @@ namespace ct_bypass::macho {
 
 namespace {
 namespace internal {
-uint32_t read_be32(const uint8_t* p);
-uint64_t read_be64(const uint8_t* p);
-
 bool read_file(const std::string& filepath, Bytes& out_data);
 bool write_file(const std::string& filepath, const Bytes& data);
 bool read_slice(const Bytes& data, uint64_t offset, uint64_t size,
@@ -59,7 +57,7 @@ ReturnCode MachO::load_slices() {
     return ReturnCode::kErrCommon;
   }
 
-  uint32_t magic = internal::read_be32(data_.data());
+  uint32_t magic = read_be32(data_.data());
   if (magic != FAT_MAGIC && magic != FAT_MAGIC_64) {
     MachOSlice slice;
     if (!internal::read_slice(data_, 0, data_.size(), slice)) {
@@ -71,7 +69,7 @@ ReturnCode MachO::load_slices() {
 
   bool is64 = magic == FAT_MAGIC_64;
   size_t entrySize = is64 ? sizeof(fat_arch_64) : sizeof(fat_arch);
-  uint32_t count = internal::read_be32(data_.data() + 4);
+  uint32_t count = read_be32(data_.data() + 4);
   if (count > (data_.size() - sizeof(fat_header)) / entrySize) {
     return ReturnCode::kErrCommon;
   }
@@ -80,10 +78,8 @@ ReturnCode MachO::load_slices() {
     // fat_arch: cputype, cpusubtype, offset, size, align (offset/size are 64
     // bits wide in fat_arch_64)
     const uint8_t* entry = data_.data() + sizeof(fat_header) + i * entrySize;
-    uint64_t offset =
-        is64 ? internal::read_be64(entry + 8) : internal::read_be32(entry + 8);
-    uint64_t size = is64 ? internal::read_be64(entry + 16)
-                         : internal::read_be32(entry + 12);
+    uint64_t offset = is64 ? read_be64(entry + 8) : read_be32(entry + 8);
+    uint64_t size = is64 ? read_be64(entry + 16) : read_be32(entry + 12);
     MachOSlice slice;
     if (internal::read_slice(data_, offset, size, slice)) {
       slices_.push_back(slice);
@@ -247,7 +243,7 @@ ReturnCode MachO::resize_code_signature(size_t new_size) {
   if (failed(ret = get_signature_range(dataoff, datasize))) {
     return ret;
   }
-  if (!linkedit_command_ || datasize < CS_BLOB_HEADER_SIZE) {
+  if (!linkedit_command_ || datasize < kBlobHeaderSize) {
     return ReturnCode::kErrCommon;
   }
   linkedit_data_command cs =
@@ -261,7 +257,7 @@ ReturnCode MachO::resize_code_signature(size_t new_size) {
     return ReturnCode::kErrCommon;
   }
 
-  uint32_t oldLength = internal::read_be32(data_.data() + dataoff + 4);
+  uint32_t oldLength = read_be32(data_.data() + dataoff + 4);
   if (oldLength > data_.size() - dataoff) {
     return ReturnCode::kErrCommon;
   }
@@ -367,15 +363,6 @@ bool host_supports_arm64e_abi_v2() {
 
 uint32_t subtype_base(cpu_subtype_t cpusubtype) {
   return static_cast<uint32_t>(cpusubtype) & ~CPU_SUBTYPE_MASK;
-}
-
-uint32_t read_be32(const uint8_t* p) {
-  return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 |
-         (uint32_t)p[3];
-}
-
-uint64_t read_be64(const uint8_t* p) {
-  return (uint64_t)read_be32(p) << 32 | read_be32(p + 4);
 }
 
 }  // namespace internal

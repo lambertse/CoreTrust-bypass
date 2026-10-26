@@ -75,3 +75,19 @@ target_compile_definitions(
 )
 
 
+
+#
+# Code signature tests
+#
+add_component_test(
+    cs_blob_test
+    macho/cs_blob_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/macho/cs_blob.cpp
+    ${PROJECT_SOURCE_DIR}/src/macho/digest.cpp
+)
+
+target_link_libraries(
+    cs_blob_test
+    PRIVATE
+        OpenSSL::Crypto
+)

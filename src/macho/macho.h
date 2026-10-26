@@ -10,15 +10,13 @@
 #include <vector>
 
 #include "exploit/return_code.h"
+#include "utils.h"
 
 #ifndef CPU_SUBTYPE_ARM64E_ABI_V2
 #define CPU_SUBTYPE_ARM64E_ABI_V2 0x80000000
 #endif
 
 namespace ct_bypass::macho {
-
-using Byte = uint8_t;
-using Bytes = std::vector<Byte>;
 
 struct MachOSlice {
   cpu_type_t cputype;
