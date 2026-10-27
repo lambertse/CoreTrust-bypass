@@ -110,6 +110,7 @@ ReturnCode MachO::load_load_commands() {
   if (commandsEnd > data_.size()) {
     return ReturnCode::kErrCommon;
   }
+  filetype_ = header.filetype;
 
   size_t cmdOffset = sizeof(mach_header_64);
   for (uint32_t i = 0; i < header.ncmds; i++) {
@@ -134,6 +135,14 @@ ReturnCode MachO::load_load_commands() {
           0) {
         linkedit_command_ = cmdOffset;
       }
+    } else if (cmd.cmd == LC_ENCRYPTION_INFO ||
+               cmd.cmd == LC_ENCRYPTION_INFO_64) {
+      if (cmd.cmdsize < sizeof(encryption_info_command)) {
+        return ReturnCode::kErrCommon;
+      }
+      encryption_info_command enc =
+          read_struct<encryption_info_command>(data_, cmdOffset);
+      encrypted_ = enc.cryptid != 0;
     }
     cmdOffset += cmd.cmdsize;
   }
@@ -292,6 +301,29 @@ ReturnCode MachO::update_code_signature(const Bytes& superblob) {
   auto signature = data_.begin() + dataoff;
   auto tail = std::copy(superblob.begin(), superblob.end(), signature);
   std::fill(tail, signature + datasize, 0);
+  return ReturnCode::kOk;
+}
+
+ReturnCode MachO::write_code_signature(const Bytes& superblob) {
+  ReturnCode rc = ReturnCode::kOk;
+
+  size_t dataoff, datasize;
+  if (failed(rc = get_signature_range(dataoff, datasize)) ||
+      superblob.size() != datasize) {
+    return ReturnCode::kErrCommon;
+  }
+  memcpy(data_.data() + dataoff, superblob.data(), superblob.size());
+
+  return rc;
+}
+
+ReturnCode MachO::save(const std::string& filepath) const {
+  if (data_.empty()) {
+    return ReturnCode::kErrCommon;
+  }
+  if (!internal::write_file(filepath, data_)) {
+    return ReturnCode::kErrCommon;
+  }
   return ReturnCode::kOk;
 }
 

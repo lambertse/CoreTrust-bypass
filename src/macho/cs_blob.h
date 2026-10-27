@@ -80,6 +80,10 @@ enum class SlotType : uint32_t {
 struct Blob {
   SlotType slot;
   Bytes data;  // the whole blob, its magic and length included
+  static Blob blob_from_generic(SlotType slot, const uint8_t* data) {
+    uint32_t length = read_be32(data + 4);
+    return {slot, std::vector<uint8_t>(data, data + length)};
+  }
 };
 
 class CodeDirectory {
@@ -131,16 +135,16 @@ class CodeDirectory {
 
 class SuperBlob {
  public:
+  SuperBlob() = default;
   static std::optional<SuperBlob> deserialize(const Bytes& data);
   Bytes serialize() const;
 
-  std::optional<Blob> find_blob(SlotType slot) const; 
+  std::optional<Blob> find_blob(SlotType slot) const;
   ReturnCode remove_blob(SlotType slot);
   ReturnCode add_blob(const Blob& blob);
+  ReturnCode replace_blob(const Blob& blob);
 
  private:
-  SuperBlob() = default;
-
   std::vector<Blob> blobs_;
 };
 

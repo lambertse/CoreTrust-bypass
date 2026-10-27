@@ -382,6 +382,20 @@ Bytes SuperBlob::serialize() const {
     length += blob.data.size();
   }
 
+  // Emit the index in ascending slot order. CoreTrust picks the CodeDirectory
+  // by slot, not by position, but codesign writes the slots sorted and the
+  // bypass relies on it to reproduce the reference layout (slot 0, then the
+  // entitlements, the alternate CodeDirectory and the signature).
+  std::vector<const Blob*> ordered;
+  ordered.reserve(blobs_.size());
+  for (const Blob& blob : blobs_) {
+    ordered.push_back(&blob);
+  }
+  std::stable_sort(ordered.begin(), ordered.end(),
+                   [](const Blob* a, const Blob* b) {
+                     return to_u32(a->slot) < to_u32(b->slot);
+                   });
+
   Bytes data(length);
   write_be32(&data[0], to_u32(BlobMagic::kEmbeddedSignature));
   write_be32(&data[4], static_cast<uint32_t>(length));
@@ -389,7 +403,7 @@ Bytes SuperBlob::serialize() const {
 
   size_t offset = kSuperBlobHeaderSize + count * kIndexEntrySize;
   for (uint32_t i = 0; i < count; i++) {
-    const Blob& blob = blobs_[i];
+    const Blob& blob = *ordered[i];
     uint8_t* entry = &data[kSuperBlobHeaderSize + i * kIndexEntrySize];
     write_be32(entry, to_u32(blob.slot));
     write_be32(entry + 4, static_cast<uint32_t>(offset));
@@ -425,6 +439,16 @@ ReturnCode SuperBlob::add_blob(const Blob& blob) {
     return ReturnCode::kErrCommon;
   }
   blobs_.push_back(blob);
+  return ReturnCode::kOk;
+}
+
+ReturnCode SuperBlob::replace_blob(const Blob& blob) {
+  auto it = std::find_if(blobs_.begin(), blobs_.end(),
+                         [&blob](const Blob& b) { return b.slot == blob.slot; });
+  if (it == blobs_.end()) {
+    return ReturnCode::kErrCommon;
+  }
+  *it = blob;
   return ReturnCode::kOk;
 }
 

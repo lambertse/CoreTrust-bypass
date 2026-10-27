@@ -176,3 +176,39 @@ target_compile_definitions(
     PRIVATE
         AD_HOC_SIGNER_FIXTURE_PATH="$<TARGET_FILE:ad_hoc_signer_fixture>"
 )
+
+#
+# CoreTrust bypass tests
+#
+add_component_test(
+    coretrust_bypass_test
+    coretrust_bypass_test.cpp
+    ${PROJECT_SOURCE_DIR}/src/coretrust_bypass.cpp
+    ${PROJECT_SOURCE_DIR}/src/macho/cs_blob.cpp
+    ${PROJECT_SOURCE_DIR}/src/macho/digest.cpp
+    ${PROJECT_SOURCE_DIR}/src/macho/macho.cpp
+    ${PROJECT_SOURCE_DIR}/src/template/template.cpp
+    ${PROJECT_SOURCE_DIR}/src/utils.cpp
+)
+
+# coretrust_bypass_test.cpp includes test/macho/cd_builders.h
+target_include_directories(
+    coretrust_bypass_test
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_link_libraries(
+    coretrust_bypass_test
+    PRIVATE
+        OpenSSL::Crypto
+        ${COREFOUNDATION_FRAMEWORK}
+)
+
+add_dependencies(coretrust_bypass_test ad_hoc_signer_fixture)
+
+target_compile_definitions(
+    coretrust_bypass_test
+    PRIVATE
+        AD_HOC_SIGNER_FIXTURE_PATH="$<TARGET_FILE:ad_hoc_signer_fixture>"
+)

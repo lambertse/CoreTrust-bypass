@@ -584,6 +584,56 @@ TEST(SuperBlob, RemoveThenAddReplacesBlob) {
                             {SlotType::kSignature, new_signature}}));
 }
 
+TEST(SuperBlob, SerializeEmitsAscendingSlotOrder) {
+  Bytes cd = make_cd({});
+  Bytes signature =
+      make_blob(static_cast<uint32_t>(BlobMagic::kBlobWrapper), 24, 0xee);
+  // Insert the signature (slot 0x10000) ahead of the CodeDirectory (slot 0)
+  auto superblob = SuperBlob::deserialize(make_superblob(
+      {{SlotType::kSignature, signature}, {SlotType::kCodeDirectory, cd}}));
+  ASSERT_TRUE(superblob);
+
+  // serialize() sorts the index by slot, regardless of insertion order
+  EXPECT_EQ(superblob->serialize(),
+            make_superblob({{SlotType::kCodeDirectory, cd},
+                            {SlotType::kSignature, signature}}));
+}
+
+TEST(SuperBlob, ReplaceBlobOverwritesInPlace) {
+  Bytes cd = make_cd({});
+  Bytes old_signature =
+      make_blob(static_cast<uint32_t>(BlobMagic::kBlobWrapper), 16, 0xee);
+  Bytes new_signature =
+      make_blob(static_cast<uint32_t>(BlobMagic::kBlobWrapper), 24, 0xdd);
+  auto superblob = SuperBlob::deserialize(make_superblob(
+      {{SlotType::kCodeDirectory, cd}, {SlotType::kSignature, old_signature}}));
+  ASSERT_TRUE(superblob);
+
+  EXPECT_EQ(superblob->replace_blob(Blob{SlotType::kSignature, new_signature}),
+            ReturnCode::kOk);
+  std::optional<Blob> found = superblob->find_blob(SlotType::kSignature);
+  ASSERT_TRUE(found);
+  EXPECT_EQ(found->data, new_signature);
+  EXPECT_EQ(superblob->serialize(),
+            make_superblob({{SlotType::kCodeDirectory, cd},
+                            {SlotType::kSignature, new_signature}}));
+}
+
+TEST(SuperBlob, ReplaceBlobRejectsAbsentSlot) {
+  Bytes cd = make_cd({});
+  Bytes signature =
+      make_blob(static_cast<uint32_t>(BlobMagic::kBlobWrapper), 16, 0xee);
+  auto superblob =
+      SuperBlob::deserialize(make_superblob({{SlotType::kCodeDirectory, cd}}));
+  ASSERT_TRUE(superblob);
+
+  EXPECT_EQ(superblob->replace_blob(Blob{SlotType::kSignature, signature}),
+            ReturnCode::kErrCommon);
+  // The SuperBlob is left untouched
+  EXPECT_EQ(superblob->serialize(),
+            make_superblob({{SlotType::kCodeDirectory, cd}}));
+}
+
 TEST(SuperBlob, RejectsMalformed) {
   Bytes blob =
       make_blob(static_cast<uint32_t>(BlobMagic::kBlobWrapper), 16, 0xee);
