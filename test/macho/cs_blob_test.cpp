@@ -497,10 +497,10 @@ TEST(SuperBlob, DeserializeThenSerializeRoundTrips) {
   ASSERT_TRUE(superblob);
   EXPECT_EQ(superblob->serialize(), data);
 
-  const Blob* found = superblob->find_blob(SlotType::kCodeDirectory);
-  ASSERT_NE(found, nullptr);
+  std::optional<Blob> found = superblob->find_blob(SlotType::kCodeDirectory);
+  ASSERT_TRUE(found);
   EXPECT_EQ(found->data, cd);
-  EXPECT_EQ(superblob->find_blob(SlotType::kEntitlements), nullptr);
+  EXPECT_FALSE(superblob->find_blob(SlotType::kEntitlements));
 }
 
 TEST(SuperBlob, RemoveBlobDropsItFromIndex) {
@@ -512,11 +512,76 @@ TEST(SuperBlob, RemoveBlobDropsItFromIndex) {
   ASSERT_TRUE(superblob);
 
   EXPECT_EQ(superblob->remove_blob(SlotType::kSignature), ReturnCode::kOk);
-  EXPECT_EQ(superblob->find_blob(SlotType::kSignature), nullptr);
+  EXPECT_FALSE(superblob->find_blob(SlotType::kSignature));
   EXPECT_EQ(superblob->remove_blob(SlotType::kSignature),
             ReturnCode::kErrCommon);
   EXPECT_EQ(superblob->serialize(),
             make_superblob({{SlotType::kCodeDirectory, cd}}));
+}
+
+TEST(SuperBlob, AddBlobAppendsToIndex) {
+  Bytes cd = make_cd({});
+  Bytes signature =
+      make_blob(static_cast<uint32_t>(BlobMagic::kBlobWrapper), 16, 0xee);
+  auto superblob =
+      SuperBlob::deserialize(make_superblob({{SlotType::kCodeDirectory, cd}}));
+  ASSERT_TRUE(superblob);
+
+  EXPECT_EQ(superblob->add_blob(Blob{SlotType::kSignature, signature}),
+            ReturnCode::kOk);
+  std::optional<Blob> found = superblob->find_blob(SlotType::kSignature);
+  ASSERT_TRUE(found);
+  EXPECT_EQ(found->data, signature);
+  EXPECT_EQ(superblob->serialize(),
+            make_superblob({{SlotType::kCodeDirectory, cd},
+                            {SlotType::kSignature, signature}}));
+}
+
+TEST(SuperBlob, AddBlobRejectsDuplicateSlot) {
+  Bytes cd = make_cd({});
+  Bytes signature =
+      make_blob(static_cast<uint32_t>(BlobMagic::kBlobWrapper), 16, 0xee);
+  Bytes data = make_superblob(
+      {{SlotType::kCodeDirectory, cd}, {SlotType::kSignature, signature}});
+  auto superblob = SuperBlob::deserialize(data);
+  ASSERT_TRUE(superblob);
+
+  Bytes other =
+      make_blob(static_cast<uint32_t>(BlobMagic::kBlobWrapper), 24, 0xdd);
+  EXPECT_EQ(superblob->add_blob(Blob{SlotType::kSignature, other}),
+            ReturnCode::kErrCommon);
+  EXPECT_EQ(superblob->serialize(), data);
+}
+
+TEST(SuperBlob, FindBlobReturnsCopy) {
+  Bytes cd = make_cd({});
+  auto superblob =
+      SuperBlob::deserialize(make_superblob({{SlotType::kCodeDirectory, cd}}));
+  ASSERT_TRUE(superblob);
+
+  // Editing the returned blob must not touch the SuperBlob
+  std::optional<Blob> found = superblob->find_blob(SlotType::kCodeDirectory);
+  ASSERT_TRUE(found);
+  found->data[8] ^= 0xff;
+  EXPECT_EQ(superblob->find_blob(SlotType::kCodeDirectory)->data, cd);
+}
+
+TEST(SuperBlob, RemoveThenAddReplacesBlob) {
+  Bytes cd = make_cd({});
+  Bytes old_signature =
+      make_blob(static_cast<uint32_t>(BlobMagic::kBlobWrapper), 16, 0xee);
+  Bytes new_signature =
+      make_blob(static_cast<uint32_t>(BlobMagic::kBlobWrapper), 24, 0xdd);
+  auto superblob = SuperBlob::deserialize(make_superblob(
+      {{SlotType::kCodeDirectory, cd}, {SlotType::kSignature, old_signature}}));
+  ASSERT_TRUE(superblob);
+
+  EXPECT_EQ(superblob->remove_blob(SlotType::kSignature), ReturnCode::kOk);
+  EXPECT_EQ(superblob->add_blob(Blob{SlotType::kSignature, new_signature}),
+            ReturnCode::kOk);
+  EXPECT_EQ(superblob->serialize(),
+            make_superblob({{SlotType::kCodeDirectory, cd},
+                            {SlotType::kSignature, new_signature}}));
 }
 
 TEST(SuperBlob, RejectsMalformed) {

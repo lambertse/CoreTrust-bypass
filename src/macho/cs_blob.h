@@ -57,6 +57,10 @@ namespace ct_bypass::macho {
 
 // Every blob, the SuperBlob included, starts with magic + length
 inline constexpr size_t kBlobHeaderSize = 8;
+inline constexpr size_t kSha1Len = 20;
+inline constexpr size_t kSha256Len = 32;
+inline constexpr size_t kCDHashLen = 20;
+inline constexpr size_t kMaxHashLen = 48;
 
 enum class BlobMagic : uint32_t {
   kCodeDirectory = 0xfade0c02,
@@ -130,9 +134,9 @@ class SuperBlob {
   static std::optional<SuperBlob> deserialize(const Bytes& data);
   Bytes serialize() const;
 
-  Blob* find_blob(SlotType slot);
-  const Blob* find_blob(SlotType slot) const;
+  std::optional<Blob> find_blob(SlotType slot) const; 
   ReturnCode remove_blob(SlotType slot);
+  ReturnCode add_blob(const Blob& blob);
 
  private:
   SuperBlob() = default;

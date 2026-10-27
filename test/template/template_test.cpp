@@ -32,7 +32,6 @@ constexpr uint32_t kAppStoreCdSize = 32469;
 constexpr uint32_t kAppStoreCdVersion = 0x20500;
 constexpr uint32_t kAppStoreTeamOffset = 118;
 constexpr uint32_t kAppStorePreEncryptOffset = 129;
-constexpr uint32_t kAppStoreHashesBegin = 16229;  // first special slot
 
 // CodeDirectory header offsets read directly by these tests
 constexpr size_t kCdHashOffset = 16;

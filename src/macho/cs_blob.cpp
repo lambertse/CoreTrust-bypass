@@ -399,23 +399,32 @@ Bytes SuperBlob::serialize() const {
   return data;
 }
 
-const Blob* SuperBlob::find_blob(SlotType slot) const {
+std::optional<Blob> SuperBlob::find_blob(SlotType slot) const {
   auto it =
       std::find_if(blobs_.begin(), blobs_.end(),
                    [slot](const Blob& blob) { return blob.slot == slot; });
-  return it == blobs_.end() ? nullptr : &*it;
-}
-
-Blob* SuperBlob::find_blob(SlotType slot) {
-  return const_cast<Blob*>(std::as_const(*this).find_blob(slot));
+  if (it == blobs_.end()) {
+    return std::nullopt;
+  }
+  return *it;
 }
 
 ReturnCode SuperBlob::remove_blob(SlotType slot) {
-  Blob* blob = find_blob(slot);
-  if (blob == nullptr) {
+  auto it =
+      std::find_if(blobs_.begin(), blobs_.end(),
+                   [slot](const Blob& blob) { return blob.slot == slot; });
+  if (it == blobs_.end()) {
     return ReturnCode::kErrCommon;
   }
-  blobs_.erase(blobs_.begin() + (blob - blobs_.data()));
+  blobs_.erase(it);
+  return ReturnCode::kOk;
+}
+
+ReturnCode SuperBlob::add_blob(const Blob& blob) {
+  if (find_blob(blob.slot).has_value()) {
+    return ReturnCode::kErrCommon;
+  }
+  blobs_.push_back(blob);
   return ReturnCode::kOk;
 }
 
