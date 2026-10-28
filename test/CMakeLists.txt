@@ -211,4 +211,5 @@ target_compile_definitions(
     coretrust_bypass_test
     PRIVATE
         AD_HOC_SIGNER_FIXTURE_PATH="$<TARGET_FILE:ad_hoc_signer_fixture>"
+        MACHO_SAMPLE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/macho_sample"
 )

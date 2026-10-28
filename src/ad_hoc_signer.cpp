@@ -1,9 +1,6 @@
 #include "exploit/ad_hoc_signer.h"
 
 #include <CoreFoundation/CoreFoundation.h>
-#include <Security/SecBase.h>
-#include <Security/SecCode.h>
-#include <Security/SecStaticCode.h>
 #include <dlfcn.h>
 
 #include <cstdint>

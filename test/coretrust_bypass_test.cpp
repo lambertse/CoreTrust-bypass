@@ -2,11 +2,16 @@
 
 #include <gtest/gtest.h>
 
+#include <mach-o/fat.h>
+#include <mach-o/loader.h>
 #include <unistd.h>
 
 #include <algorithm>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -43,6 +48,55 @@ SuperBlob build_superblob(
   std::optional<SuperBlob> sb = SuperBlob::deserialize(make_superblob(entries));
   EXPECT_TRUE(sb.has_value());
   return sb.value_or(SuperBlob{});
+}
+
+uint32_t read_le32(const Bytes& data, size_t offset) {
+  uint32_t value = 0;
+  EXPECT_LE(offset + sizeof(value), data.size());
+  if (offset + sizeof(value) <= data.size()) {
+    memcpy(&value, data.data() + offset, sizeof(value));
+  }
+  return value;
+}
+
+Bytes read_file(const std::string& path) {
+  std::ifstream file(path, std::ios::binary);
+  EXPECT_TRUE(file) << "failed to open " << path;
+  return Bytes((std::istreambuf_iterator<char>(file)),
+               std::istreambuf_iterator<char>());
+}
+
+// Header-only thin 64-bit Mach-O.
+Bytes make_header64(cpu_type_t cputype, cpu_subtype_t cpusubtype) {
+  mach_header_64 header{};
+  header.magic = MH_MAGIC_64;
+  header.cputype = cputype;
+  header.cpusubtype = cpusubtype;
+  header.filetype = MH_EXECUTE;
+  const auto* bytes = reinterpret_cast<const uint8_t*>(&header);
+  return Bytes(bytes, bytes + sizeof(header));
+}
+
+// Universal binary holding `slices`, each aligned to 16 KiB.
+Bytes make_fat(const std::vector<Bytes>& slices) {
+  constexpr size_t kAlign = 0x4000;
+  Bytes data(kAlign, 0);
+  write_be32(data.data(), FAT_MAGIC);
+  write_be32(data.data() + 4, static_cast<uint32_t>(slices.size()));
+  for (size_t i = 0; i < slices.size(); i++) {
+    const Bytes& slice = slices[i];
+    size_t offset = data.size();
+    uint8_t* entry = data.data() + sizeof(fat_header) + i * sizeof(fat_arch);
+    // cputype and cpusubtype sit at offsets 4 and 8 of the slice's header
+    write_be32(entry, read_le32(slice, 4));
+    write_be32(entry + 4, read_le32(slice, 8));
+    write_be32(entry + 8, static_cast<uint32_t>(offset));
+    write_be32(entry + 12, static_cast<uint32_t>(slice.size()));
+    write_be32(entry + 16, 14);  // log2 of the alignment
+    data.insert(data.end(), slice.begin(), slice.end());
+    data.resize((data.size() + kAlign - 1) / kAlign * kAlign, 0);
+  }
+  return data;
 }
 
 // Team ID baked into the bundled App Store CodeDirectory template.
@@ -214,6 +268,52 @@ TEST(LoadCodeSignature, DecodesFixtureSignature) {
   EXPECT_TRUE(superblob.find_blob(SlotType::kCodeDirectory).has_value());
 }
 
+TEST(CheckSupportedMacho, RejectsUniversalBinary) {
+  MachO::Ptr macho;
+  ASSERT_EQ(MachO::from_bytes(make_fat({read_file(MACHO_SAMPLE_PATH)}), macho),
+            ReturnCode::kOk);
+  EXPECT_EQ(detail::check_supported_macho(*macho),
+            ReturnCode::kErrMachoNoUsableSlice);
+}
+
+//
+// select_slice
+//
+
+TEST(SelectSlice, KeepsThinMachO) {
+  MachO::Ptr macho;
+  ASSERT_EQ(MachO::load(MACHO_SAMPLE_PATH, macho), ReturnCode::kOk);
+  const MachO* thin = macho.get();
+
+  ASSERT_EQ(detail::select_slice(macho), ReturnCode::kOk);
+  EXPECT_EQ(macho.get(), thin);
+}
+
+TEST(SelectSlice, ExtractsArm64SliceFromUniversalBinary) {
+  // macho_sample is plain arm64, which every arm64 host and macOS can pick
+  Bytes sample = read_file(MACHO_SAMPLE_PATH);
+  MachO::Ptr macho;
+  ASSERT_EQ(MachO::from_bytes(
+                make_fat({make_header64(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL),
+                          sample}),
+                macho),
+            ReturnCode::kOk);
+
+  ASSERT_EQ(detail::select_slice(macho), ReturnCode::kOk);
+  EXPECT_TRUE(macho->is_thin_64());
+  EXPECT_TRUE(macho->data() == sample);
+  EXPECT_EQ(detail::check_supported_macho(*macho), ReturnCode::kOk);
+}
+
+TEST(SelectSlice, FailsWithoutArm64Slice) {
+  MachO::Ptr macho;
+  ASSERT_EQ(MachO::from_bytes(
+                make_fat({make_header64(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL)}),
+                macho),
+            ReturnCode::kOk);
+  EXPECT_EQ(detail::select_slice(macho), ReturnCode::kErrMachoNoUsableSlice);
+}
+
 //
 // End-to-end bypass on a freshly ad-hoc-signed fixture. macho_sample can't be
 // used here: its slot 0 is already a transplanted App Store CD, which would
@@ -315,6 +415,47 @@ TEST_F(CoreTrustBypassE2E, ProducesAConsistentSignature) {
   EXPECT_NE(std::search(cms->data.begin(), cms->data.end(), sha1->begin(),
                         sha1->end()),
             cms->data.end());
+  EXPECT_NE(std::search(cms->data.begin(), cms->data.end(), sha256->begin(),
+                        sha256->end()),
+            cms->data.end());
+}
+
+// A universal input is replaced by its re-signed arm64 slice
+TEST_F(CoreTrustBypassE2E, ThinsUniversalBinary) {
+  std::string universal = (std::filesystem::path(dir_) / "universal").string();
+  {
+    Bytes fat = make_fat({make_header64(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL),
+                          read_file(MACHO_SAMPLE_PATH)});
+    std::ofstream file(universal, std::ios::binary | std::ios::trunc);
+    file.write(reinterpret_cast<const char*>(fat.data()),
+               static_cast<std::streamsize>(fat.size()));
+    ASSERT_TRUE(file);
+  }
+
+  ASSERT_EQ(CoreTrustBypass::create(universal)->bypass(), ReturnCode::kOk);
+
+  MachO::Ptr macho;
+  ASSERT_EQ(MachO::load(universal, macho), ReturnCode::kOk);
+  ASSERT_TRUE(macho->is_thin_64());
+  EXPECT_EQ(macho->get_slices()[0].cputype, CPU_TYPE_ARM64);
+
+  SuperBlob superblob;
+  size_t offset = 0;
+  ASSERT_EQ(detail::load_code_signature(*macho, superblob, offset),
+            ReturnCode::kOk);
+  std::optional<Blob> alt =
+      superblob.find_blob(SlotType::kAlternateCodeDirectories);
+  std::optional<Blob> cms = superblob.find_blob(SlotType::kSignature);
+  ASSERT_TRUE(alt);
+  ASSERT_TRUE(cms);
+
+  // The thinned slice was actually re-signed: the CMS vouches for the real
+  // CodeDirectory, i.e. its SHA-256 appears in the signature. macho_sample's
+  // slot 0 is already the App Store CD, so comparing slot 0 would prove
+  // nothing.
+  std::optional<Bytes> sha256 =
+      compute_digest(HashType::kSha256, alt->data.data(), alt->data.size());
+  ASSERT_TRUE(sha256);
   EXPECT_NE(std::search(cms->data.begin(), cms->data.end(), sha256->begin(),
                         sha256->end()),
             cms->data.end());

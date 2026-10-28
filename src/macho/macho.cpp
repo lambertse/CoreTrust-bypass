@@ -29,21 +29,21 @@ uint32_t subtype_base(cpu_subtype_t cpusubtype);
 }  // namespace internal
 
 template <typename T>
-T read_struct(const Bytes& data, size_t off_set) {
+T read_struct(const Bytes& data, size_t offset) {
   T out_value{};
-  if (off_set > data.size() || sizeof(T) > data.size() - off_set) {
+  if (offset > data.size() || sizeof(T) > data.size() - offset) {
     return out_value;
   }
-  memcpy(&out_value, data.data() + off_set, sizeof(T));
+  memcpy(&out_value, data.data() + offset, sizeof(T));
   return out_value;
 }
 
 template <typename T>
-bool write_struct(Bytes& data, size_t off_set, const T& value) {
-  if (off_set > data.size() || sizeof(T) > data.size() - off_set) {
+bool write_struct(Bytes& data, size_t offset, const T& value) {
+  if (offset > data.size() || sizeof(T) > data.size() - offset) {
     return false;
   }
-  memcpy(data.data() + off_set, &value, sizeof(T));
+  memcpy(data.data() + offset, &value, sizeof(T));
   return true;
 }
 }  // namespace
@@ -68,16 +68,16 @@ ReturnCode MachO::load_slices() {
   }
 
   bool is64 = magic == FAT_MAGIC_64;
-  size_t entrySize = is64 ? sizeof(fat_arch_64) : sizeof(fat_arch);
+  size_t entry_size = is64 ? sizeof(fat_arch_64) : sizeof(fat_arch);
   uint32_t count = read_be32(data_.data() + 4);
-  if (count > (data_.size() - sizeof(fat_header)) / entrySize) {
+  if (count > (data_.size() - sizeof(fat_header)) / entry_size) {
     return ReturnCode::kErrCommon;
   }
 
   for (uint32_t i = 0; i < count; i++) {
     // fat_arch: cputype, cpusubtype, offset, size, align (offset/size are 64
     // bits wide in fat_arch_64)
-    const uint8_t* entry = data_.data() + sizeof(fat_header) + i * entrySize;
+    const uint8_t* entry = data_.data() + sizeof(fat_header) + i * entry_size;
     uint64_t offset = is64 ? read_be64(entry + 8) : read_be32(entry + 8);
     uint64_t size = is64 ? read_be64(entry + 16) : read_be32(entry + 12);
     MachOSlice slice;
@@ -93,47 +93,47 @@ ReturnCode MachO::load_slices() {
 }
 
 ReturnCode MachO::load_load_commands() {
+  filetype_.reset();
+  encrypted_ = false;
   linkedit_command_.reset();
   code_signature_command_.reset();
 
   // Only a thin 64-bit Mach-O supports signature editing (see macho.h); other
   // files still load for slice inspection.
-  if (slices_.size() != 1 || slices_[0].offset != 0 ||
-      slices_[0].size != data_.size() ||
-      read_struct<uint32_t>(data_, 0) != MH_MAGIC_64) {
+  if (!is_thin_64()) {
     return ReturnCode::kOk;
   }
 
   // read_slice already checked the file holds a whole mach_header_64.
   mach_header_64 header = read_struct<mach_header_64>(data_, 0);
-  size_t commandsEnd = sizeof(mach_header_64) + header.sizeofcmds;
-  if (commandsEnd > data_.size()) {
+  size_t commands_end = sizeof(mach_header_64) + header.sizeofcmds;
+  if (commands_end > data_.size()) {
     return ReturnCode::kErrCommon;
   }
   filetype_ = header.filetype;
 
-  size_t cmdOffset = sizeof(mach_header_64);
+  size_t cmd_offset = sizeof(mach_header_64);
   for (uint32_t i = 0; i < header.ncmds; i++) {
-    if (sizeof(load_command) > commandsEnd - cmdOffset) {
+    if (sizeof(load_command) > commands_end - cmd_offset) {
       return ReturnCode::kErrCommon;
     }
-    load_command cmd = read_struct<load_command>(data_, cmdOffset);
+    load_command cmd = read_struct<load_command>(data_, cmd_offset);
     if (cmd.cmdsize < sizeof(load_command) ||
-        cmd.cmdsize > commandsEnd - cmdOffset) {
+        cmd.cmdsize > commands_end - cmd_offset) {
       return ReturnCode::kErrCommon;
     }
     // Commands too small for their struct are skipped so a later write_struct
     // can't spill into the next command.
     if (cmd.cmd == LC_CODE_SIGNATURE &&
         cmd.cmdsize >= sizeof(linkedit_data_command)) {
-      code_signature_command_ = cmdOffset;
+      code_signature_command_ = cmd_offset;
     } else if (cmd.cmd == LC_SEGMENT_64 &&
                cmd.cmdsize >= sizeof(segment_command_64)) {
       segment_command_64 segment =
-          read_struct<segment_command_64>(data_, cmdOffset);
+          read_struct<segment_command_64>(data_, cmd_offset);
       if (strncmp(segment.segname, SEG_LINKEDIT, sizeof(segment.segname)) ==
           0) {
-        linkedit_command_ = cmdOffset;
+        linkedit_command_ = cmd_offset;
       }
     } else if (cmd.cmd == LC_ENCRYPTION_INFO ||
                cmd.cmd == LC_ENCRYPTION_INFO_64) {
@@ -141,10 +141,11 @@ ReturnCode MachO::load_load_commands() {
         return ReturnCode::kErrCommon;
       }
       encryption_info_command enc =
-          read_struct<encryption_info_command>(data_, cmdOffset);
-      encrypted_ = enc.cryptid != 0;
+          read_struct<encryption_info_command>(data_, cmd_offset);
+      // Any encrypted range makes the whole binary unusable
+      encrypted_ = encrypted_ || enc.cryptid != 0;
     }
-    cmdOffset += cmd.cmdsize;
+    cmd_offset += cmd.cmdsize;
   }
 
   return ReturnCode::kOk;
@@ -155,6 +156,10 @@ ReturnCode MachO::load(const std::string& filepath, MachO::Ptr& out_macho) {
   if (!internal::read_file(filepath, data)) {
     return ReturnCode::kErrCommon;
   }
+  return from_bytes(std::move(data), out_macho);
+}
+
+ReturnCode MachO::from_bytes(Bytes data, MachO::Ptr& out_macho) {
   MachO::Ptr macho(new MachO(std::move(data)));
   ReturnCode ret = ReturnCode::kOk;
   if (failed(ret = macho->load_slices()) ||
@@ -165,14 +170,10 @@ ReturnCode MachO::load(const std::string& filepath, MachO::Ptr& out_macho) {
   return ReturnCode::kOk;
 }
 
-ReturnCode MachO::save(const std::string& filepath, const MachO::Ptr& macho) {
-  if (!macho) {
-    return ReturnCode::kErrCommon;
-  }
-  if (!internal::write_file(filepath, macho->data_)) {
-    return ReturnCode::kErrCommon;
-  }
-  return ReturnCode::kOk;
+bool MachO::is_thin_64() const {
+  return slices_.size() == 1 && slices_[0].offset == 0 &&
+         slices_[0].size == data_.size() &&
+         read_struct<uint32_t>(data_, 0) == MH_MAGIC_64;
 }
 
 const MachOSliceList& MachO::get_slices() const { return slices_; }
@@ -193,42 +194,67 @@ std::optional<MachOSlice> MachO::find_slice(cpu_type_t cputype,
 std::optional<MachOSlice> MachO::find_preferred_slice() const {
   cpu_type_t host_cputype;
   cpu_subtype_t host_cpusubtype;
-  if (!internal::host_get_cpu_type(host_cputype, host_cpusubtype)) {
+  if (!internal::host_get_cpu_type(host_cputype, host_cpusubtype) ||
+      host_cputype != CPU_TYPE_ARM64) {
     return std::nullopt;
   }
 
-  if (host_cputype == CPU_TYPE_ARM64 &&
-      internal::subtype_base(host_cpusubtype) ==
-          internal::subtype_base(CPU_SUBTYPE_ARM64E)) {
-    // An arm64e slice only loads when its ABI matches the host's (Darwin 20 /
-    // iOS 14 moved to the new one). Otherwise plain arm64 still runs.
+  if (internal::subtype_base(host_cpusubtype) ==
+      internal::subtype_base(CPU_SUBTYPE_ARM64E)) {
+    // Darwin 20 (iOS 14 / macOS 11) moved arm64e to the new ABI. An old-ABI
+    // executable no longer runs there, but an old-ABI library still loads.
     bool host_abi_v2 = internal::host_supports_arm64e_abi_v2();
-    for (const auto& slice : slices_) {
-      bool slice_abi_v2 = (static_cast<uint32_t>(slice.cpusubtype) &
-                           CPU_SUBTYPE_ARM64E_ABI_V2) != 0;
-      if (slice.cputype == CPU_TYPE_ARM64 &&
-          internal::subtype_base(slice.cpusubtype) ==
-              internal::subtype_base(CPU_SUBTYPE_ARM64E) &&
-          slice_abi_v2 == host_abi_v2) {
-        return slice;
-      }
+    if (host_abi_v2) {
+      if (auto slice = find_arm64e_slice(true)) return slice;
     }
-    return find_slice(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL);
+    auto slice = find_arm64e_slice(false);
+    if (slice && !(host_abi_v2 && slice->filetype == MH_EXECUTE)) {
+      return slice;
+    }
   }
 
-  if (auto slice = find_slice(host_cputype, host_cpusubtype)) {
+  // The kernel prefers an arm64v8 slice to a plain arm64 one
+  if (auto slice = find_slice(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_V8)) {
     return slice;
   }
-  // Hosts can report a specific subtype (arm64 v8, x86_64h) while binaries
-  // are built for the generic one.
-  switch (host_cputype) {
-    case CPU_TYPE_ARM64:
-      return find_slice(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL);
-    case CPU_TYPE_X86_64:
-      return find_slice(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL);
-    default:
-      return std::nullopt;
+  return find_slice(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL);
+}
+
+std::optional<MachOSlice> MachO::find_arm64_slice() const {
+  if (auto slice = find_slice(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_V8)) {
+    return slice;
   }
+  if (auto slice = find_slice(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL)) {
+    return slice;
+  }
+  if (auto slice = find_arm64e_slice(true)) {
+    return slice;
+  }
+  return find_arm64e_slice(false);
+}
+
+std::optional<MachOSlice> MachO::find_arm64e_slice(bool abi_v2) const {
+  for (const auto& slice : slices_) {
+    bool slice_abi_v2 = (static_cast<uint32_t>(slice.cpusubtype) &
+                         CPU_SUBTYPE_ARM64E_ABI_V2) != 0;
+    if (slice.cputype == CPU_TYPE_ARM64 &&
+        internal::subtype_base(slice.cpusubtype) ==
+            internal::subtype_base(CPU_SUBTYPE_ARM64E) &&
+        slice_abi_v2 == abi_v2) {
+      return slice;
+    }
+  }
+  return std::nullopt;
+}
+
+ReturnCode MachO::extract_slice(const MachOSlice& slice,
+                                MachO::Ptr& out) const {
+  if (slice.offset > data_.size() || slice.size > data_.size() - slice.offset) {
+    return ReturnCode::kErrCommon;
+  }
+  auto begin = data_.begin() + static_cast<ptrdiff_t>(slice.offset);
+  return from_bytes(Bytes(begin, begin + static_cast<ptrdiff_t>(slice.size)),
+                    out);
 }
 
 ReturnCode MachO::get_signature_range(size_t& out_offset,
@@ -266,27 +292,27 @@ ReturnCode MachO::resize_code_signature(size_t new_size) {
     return ReturnCode::kErrCommon;
   }
 
-  uint32_t oldLength = read_be32(data_.data() + dataoff + 4);
-  if (oldLength > data_.size() - dataoff) {
+  uint32_t old_length = read_be32(data_.data() + dataoff + 4);
+  if (old_length > data_.size() - dataoff) {
     return ReturnCode::kErrCommon;
   }
-  uint64_t padding = data_.size() - dataoff - oldLength;
+  uint64_t padding = data_.size() - dataoff - old_length;
   // LC_CODE_SIGNATURE has to cover the padding too, or the file runs past the
   // end of the signature.
-  uint64_t newDataSize = (uint64_t)new_size + padding;
-  if (new_size > UINT32_MAX || newDataSize > UINT32_MAX) {
+  uint64_t new_data_size = (uint64_t)new_size + padding;
+  if (new_size > UINT32_MAX || new_data_size > UINT32_MAX) {
     return ReturnCode::kErrCommon;
   }
-  uint64_t newFileSize = dataoff + newDataSize;
+  uint64_t new_file_size = dataoff + new_data_size;
 
-  cs.datasize = static_cast<uint32_t>(newDataSize);
-  linkedit.filesize = newFileSize - linkedit.fileoff;
+  cs.datasize = static_cast<uint32_t>(new_data_size);
+  linkedit.filesize = new_file_size - linkedit.fileoff;
   linkedit.vmsize = (linkedit.filesize + 0x3fff) & ~(uint64_t)0x3fff;
   write_struct(data_, *code_signature_command_, cs);
   write_struct(data_, *linkedit_command_, linkedit);
 
-  data_.resize(newFileSize);
-  memset(data_.data() + dataoff, 0, newFileSize - dataoff);
+  data_.resize(new_file_size);
+  memset(data_.data() + dataoff, 0, new_file_size - dataoff);
   slices_[0].size = data_.size();
   return ReturnCode::kOk;
 }
@@ -302,19 +328,6 @@ ReturnCode MachO::update_code_signature(const Bytes& superblob) {
   auto tail = std::copy(superblob.begin(), superblob.end(), signature);
   std::fill(tail, signature + datasize, 0);
   return ReturnCode::kOk;
-}
-
-ReturnCode MachO::write_code_signature(const Bytes& superblob) {
-  ReturnCode rc = ReturnCode::kOk;
-
-  size_t dataoff, datasize;
-  if (failed(rc = get_signature_range(dataoff, datasize)) ||
-      superblob.size() != datasize) {
-    return ReturnCode::kErrCommon;
-  }
-  memcpy(data_.data() + dataoff, superblob.data(), superblob.size());
-
-  return rc;
 }
 
 ReturnCode MachO::save(const std::string& filepath) const {
