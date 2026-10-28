@@ -71,6 +71,7 @@ endif()
 add_library(${PROJECT_NAME}_objects OBJECT
   src/ad_hoc_signer.cpp
   src/coretrust_bypass.cpp
+  src/log.cpp
   src/template/template.cpp
   src/macho/macho.cpp
   src/macho/cs_blob.cpp

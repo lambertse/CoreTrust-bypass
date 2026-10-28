@@ -184,6 +184,7 @@ add_component_test(
     coretrust_bypass_test
     coretrust_bypass_test.cpp
     ${PROJECT_SOURCE_DIR}/src/coretrust_bypass.cpp
+    ${PROJECT_SOURCE_DIR}/src/log.cpp
     ${PROJECT_SOURCE_DIR}/src/macho/cs_blob.cpp
     ${PROJECT_SOURCE_DIR}/src/macho/digest.cpp
     ${PROJECT_SOURCE_DIR}/src/macho/macho.cpp

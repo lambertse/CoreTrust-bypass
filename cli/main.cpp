@@ -19,6 +19,7 @@
 #include "exploit/ad_hoc_signer.h"
 #include "exploit/coretrust_bypass.h"
 #include "exploit/return_code.h"
+#include "log.h"
 
 #ifndef CT_BYPASS_VERSION
 #define CT_BYPASS_VERSION "unknown"
@@ -36,7 +37,7 @@ enum ExitCode { kExitOk = 0, kExitUsage = 1, kExitFailed = 2 };
 CFPtr<CFDictionaryRef> load_entitlements(const std::string& path) {
   std::ifstream file(path, std::ios::binary);
   if (!file) {
-    fprintf(stderr, "Error: cannot open entitlements file %s\n", path.c_str());
+    ct_bypass::log::error("cannot open entitlements file %s", path.c_str());
     return nullptr;
   }
   std::vector<UInt8> bytes((std::istreambuf_iterator<char>(file)),
@@ -50,12 +51,48 @@ CFPtr<CFDictionaryRef> load_entitlements(const std::string& path) {
       kCFAllocatorDefault, data.get(), kCFPropertyListImmutable, nullptr,
       nullptr));
   if (!plist || CFGetTypeID(plist.get()) != CFDictionaryGetTypeID()) {
-    fprintf(stderr, "Error: %s is not a property-list dictionary\n",
-            path.c_str());
+    ct_bypass::log::error("%s is not a property-list dictionary", path.c_str());
     return nullptr;
   }
   return CFPtr<CFDictionaryRef>(
       static_cast<CFDictionaryRef>(plist.release()));
+}
+
+// Ad-hoc signs (unless --no-adhoc) and bypasses `input`, logging each step
+ExitCode run(const std::string& input, const cxxopts::ParseResult& args) {
+  namespace log = ct_bypass::log;
+
+  log::step("Ad-hoc sign %s", input.c_str());
+  CFPtr<CFDictionaryRef> entitlements;
+  if (args.count("entitlements")) {
+    const std::string path = args["entitlements"].as<std::string>();
+    log::substep("Load entitlements from %s", path.c_str());
+    entitlements = load_entitlements(path);
+    if (!entitlements) return kExitUsage;
+  }
+
+  if (args.count("no-adhoc")) {
+    log::substep("Skip signing (--no-adhoc)");
+  } else {
+    log::substep("Sign with Security.framework");
+    ReturnCode rc = ct_bypass::AdHocSigner::create(
+                        input, /*preserve_metadata=*/true, entitlements.get())
+                        ->sign();
+    if (failed(rc)) {
+      // As in fastPathSign: an existing signature may still be enough, so the
+      // bypass is attempted regardless.
+      log::warn("ad-hoc signing failed (%d); continuing",
+                static_cast<int>(rc));
+    }
+  }
+
+  // The library logs its own steps, continuing the numbering
+  ReturnCode rc = ct_bypass::CoreTrustBypass::create(input)->bypass();
+  if (failed(rc)) {
+    log::error("CoreTrust bypass failed (%d)", static_cast<int>(rc));
+    return kExitFailed;
+  }
+  return kExitOk;
 }
 
 }  // namespace
@@ -101,33 +138,7 @@ int main(int argc, char** argv) {
     return kExitUsage;
   }
 
-  const std::string input = args["input"].as<std::string>();
-
-  CFPtr<CFDictionaryRef> entitlements;
-  if (args.count("entitlements")) {
-    entitlements = load_entitlements(args["entitlements"].as<std::string>());
-    if (!entitlements) return kExitUsage;
-  }
-
-  if (!args.count("no-adhoc")) {
-    printf("Ad-hoc signing %s...\n", input.c_str());
-    ReturnCode rc = ct_bypass::AdHocSigner::create(
-                        input, /*preserve_metadata=*/true, entitlements.get())
-                        ->sign();
-    if (failed(rc)) {
-      // As in fastPathSign: an existing signature may still be enough, so the
-      // bypass is attempted regardless.
-      fprintf(stderr, "Warning: ad-hoc signing failed (%d); continuing\n",
-              static_cast<int>(rc));
-    }
-  }
-
-  printf("Applying CoreTrust bypass to %s...\n", input.c_str());
-  ReturnCode rc = ct_bypass::CoreTrustBypass::create(input)->bypass();
-  if (failed(rc)) {
-    fprintf(stderr, "Error: CoreTrust bypass failed (%d)\n",
-            static_cast<int>(rc));
-    return kExitFailed;
-  }
-  return kExitOk;
+  ExitCode exit_code = run(args["input"].as<std::string>(), args);
+  ct_bypass::log::result(exit_code == kExitOk);
+  return exit_code;
 }

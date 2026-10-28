@@ -4,12 +4,12 @@
 #include <dlfcn.h>
 
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
 #include "cf_ptr.h"
+#include "log.h"
 #include "security_spi.h"
 #include "utils.h"
 
@@ -56,8 +56,8 @@ CFPtr<CFDataRef> create_entitlements_blob(CFDictionaryRef entitlements) {
                                kCFPropertyListXMLFormat_v1_0, 0, &error_raw));
   CFPtr<CFErrorRef> error(error_raw);
   if (!xml_data) {
-    fprintf(stderr, "Failed to encode entitlements: %s\n",
-            utils::cf_description(error.get()).c_str());
+    log::error("failed to encode entitlements: %s",
+               utils::cf_description(error.get()).c_str());
     return nullptr;
   }
 
@@ -127,8 +127,8 @@ OSStatus add_signature(SecCodeSignerRef signer, SecStaticCodeRef code) {
       signer, code, kSecCSDefaultFlags, &errors_raw);
   CFPtr<CFErrorRef> errors(errors_raw);
   if (status != errSecSuccess) {
-    fprintf(stderr, "Error while signing: %s\n",
-            utils::cf_description(errors.get()).c_str());
+    log::error("signing failed: %s",
+               utils::cf_description(errors.get()).c_str());
   }
   return status;
 }
