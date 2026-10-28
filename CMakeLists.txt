@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 
-project(ct_bypass LANGUAGES CXX)
+project(ct_bypass LANGUAGES CXX VERSION 1.0.0)
 
 if(NOT APPLE)
   message(FATAL_ERROR "${PROJECT_NAME} requires an Apple platform (Security.framework)")
@@ -66,7 +66,9 @@ if(NOT TARGET OpenSSL::Crypto)
   add_library(OpenSSL::Crypto ALIAS crypto)
 endif()
 
-add_library(${PROJECT_NAME} SHARED
+# Compile the sources once; the shared library, the static library and the
+# standalone CLI all reuse these objects.
+add_library(${PROJECT_NAME}_objects OBJECT
   src/ad_hoc_signer.cpp
   src/coretrust_bypass.cpp
   src/template/template.cpp
@@ -76,25 +78,78 @@ add_library(${PROJECT_NAME} SHARED
   src/utils.cpp
 )
 
-target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
-set_target_properties(${PROJECT_NAME} PROPERTIES
+target_compile_features(${PROJECT_NAME}_objects PUBLIC cxx_std_17)
+set_target_properties(${PROJECT_NAME}_objects PROPERTIES
   CXX_EXTENSIONS OFF
   CXX_VISIBILITY_PRESET hidden
   VISIBILITY_INLINES_HIDDEN ON
+  POSITION_INDEPENDENT_CODE ON  # so the objects can also go into the shared lib
 )
 
-target_include_directories(${PROJECT_NAME}
+target_include_directories(${PROJECT_NAME}_objects
   PUBLIC  ${CMAKE_CURRENT_SOURCE_DIR}/include
   PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wpedantic)
+target_compile_options(${PROJECT_NAME}_objects PRIVATE -Wall -Wextra -Wpedantic)
 
-target_link_libraries(${PROJECT_NAME}
+# These usage requirements flow through the object library to every consumer,
+# including the static library the CLI links in.
+target_link_libraries(${PROJECT_NAME}_objects
   PUBLIC  ${COREFOUNDATION_FRAMEWORK}
   PRIVATE ${SECURITY_FRAMEWORK}
           OpenSSL::Crypto
 )
+
+# Shared library for external consumers (libct_bypass.dylib).
+add_library(${PROJECT_NAME} SHARED)
+target_link_libraries(${PROJECT_NAME} PUBLIC ${PROJECT_NAME}_objects)
+
+# Static library (libct_bypass.a) so the CLI can be a standalone binary.
+add_library(${PROJECT_NAME}_static STATIC)
+set_target_properties(${PROJECT_NAME}_static PROPERTIES OUTPUT_NAME ${PROJECT_NAME})
+target_link_libraries(${PROJECT_NAME}_static PUBLIC ${PROJECT_NAME}_objects)
+
+option(CT_BYPASS_BUILD_CLI "Build the ct_bypass command-line tool" ON)
+if(CT_BYPASS_BUILD_CLI)
+  # cxxopts (header-only, single target cxxopts::cxxopts) for argument parsing.
+  if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+  endif()
+
+  include(FetchContent)
+  FetchContent_Declare(
+    cxxopts
+    URL https://github.com/jarro2783/cxxopts/archive/refs/tags/v3.2.0.tar.gz
+    URL_HASH SHA256=9f43fa972532e5df6c5fd5ad0f5bac606cdec541ccaf1732463d8070bbb7f03b
+  )
+  set(CXXOPTS_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+  set(CXXOPTS_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+  set(CXXOPTS_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(cxxopts)
+
+  add_executable(${PROJECT_NAME}_cli cli/main.cpp)
+  set_target_properties(${PROJECT_NAME}_cli PROPERTIES
+    OUTPUT_NAME ${PROJECT_NAME}
+    CXX_EXTENSIONS OFF
+  )
+  target_compile_features(${PROJECT_NAME}_cli PRIVATE cxx_std_17)
+  target_compile_options(${PROJECT_NAME}_cli PRIVATE -Wall -Wextra -Wpedantic)
+  target_compile_definitions(${PROJECT_NAME}_cli
+    PRIVATE CT_BYPASS_VERSION="${PROJECT_VERSION}")
+  # cf_ptr.h is a private helper reused for the entitlements loader.
+  target_include_directories(${PROJECT_NAME}_cli
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  # Link the static library so the tool is standalone: no libct_bypass.dylib is
+  # needed at runtime. (With a system OpenSSL, libcrypto is still a shared
+  # dependency; the bundled LibreSSL is static, giving a single self-contained
+  # binary.)
+  target_link_libraries(${PROJECT_NAME}_cli
+    PRIVATE ${PROJECT_NAME}_static
+            cxxopts::cxxopts
+            ${COREFOUNDATION_FRAMEWORK}
+  )
+endif()
 
 option(CT_BYPASS_BUILD_TESTS "Build the unit tests" ON)
 if(CT_BYPASS_BUILD_TESTS)

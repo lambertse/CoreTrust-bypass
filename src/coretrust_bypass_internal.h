@@ -6,7 +6,6 @@
 // part of the public API; use exploit/coretrust_bypass.h for that.
 
 #include <cstddef>
-#include <cstdint>
 #include <string>
 
 #include "exploit/return_code.h"
