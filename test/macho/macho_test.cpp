@@ -152,6 +152,28 @@ Bytes make_header32(cpu_type_t cputype, cpu_subtype_t cpusubtype,
   return data;
 }
 
+// Thin 64-bit arm64 executable whose only load commands are
+// LC_ENCRYPTION_INFO_64s with these cryptids, in order.
+Bytes make_encrypted_macho(const std::vector<uint32_t>& cryptids) {
+  Bytes data = make_header64(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL);
+  mach_header_64 header{};
+  memcpy(&header, data.data(), sizeof(header));
+  header.ncmds = static_cast<uint32_t>(cryptids.size());
+  header.sizeofcmds =
+      static_cast<uint32_t>(cryptids.size() * sizeof(encryption_info_command_64));
+  put(data, 0, header);
+  for (uint32_t cryptid : cryptids) {
+    encryption_info_command_64 cmd{};
+    cmd.cmd = LC_ENCRYPTION_INFO_64;
+    cmd.cmdsize = sizeof(cmd);
+    cmd.cryptid = cryptid;
+    size_t at = data.size();
+    data.resize(at + sizeof(cmd));
+    put(data, at, cmd);
+  }
+  return data;
+}
+
 // Signed thin 64-bit arm64 executable whose LC_CODE_SIGNATURE covers
 // `datasize` bytes holding a SuperBlob of `blob_length`, followed by
 // `trailing` bytes outside the range:
@@ -256,6 +278,12 @@ bool host_cpu_type(cpu_type_t& out_cputype, cpu_subtype_t& out_cpusubtype) {
   return sysctlbyname("hw.cpusubtype", &out_cpusubtype, &len, nullptr, 0) == 0;
 }
 
+bool host_is_arm64() {
+  cpu_type_t cputype;
+  cpu_subtype_t cpusubtype;
+  return host_cpu_type(cputype, cpusubtype) && cputype == CPU_TYPE_ARM64;
+}
+
 bool host_is_arm64e() {
   cpu_type_t cputype;
   cpu_subtype_t cpusubtype;
@@ -318,7 +346,7 @@ class MachOTest : public ::testing::Test {
   // Returns the bytes MachO::save writes for `macho`.
   Bytes saved(const MachO::Ptr& macho) const {
     std::string filepath = path("output");
-    EXPECT_EQ(MachO::save(filepath, macho), ReturnCode::kOk);
+    EXPECT_EQ(macho->save(filepath), ReturnCode::kOk);
     return read_file(filepath);
   }
 
@@ -329,6 +357,8 @@ using MachOLoadTest = MachOTest;
 using MachOLoadCommandsTest = MachOTest;
 using MachOFindSliceTest = MachOTest;
 using MachOFindPreferredSliceTest = MachOTest;
+using MachOFindArm64SliceTest = MachOTest;
+using MachOExtractSliceTest = MachOTest;
 using MachOGetSignatureRangeTest = MachOTest;
 using MachOResizeCodeSignatureTest = MachOTest;
 using MachOUpdateCodeSignatureTest = MachOTest;
@@ -600,6 +630,75 @@ TEST_F(MachOLoadCommandsTest, IgnoresUndersizedLinkeditCommand) {
   EXPECT_EQ(macho->resize_code_signature(0x100), ReturnCode::kErrCommon);
 }
 
+TEST_F(MachOLoadCommandsTest, DetectsThin64) {
+  MachO::Ptr macho;
+  ASSERT_EQ(load(make_signed_macho(), macho), ReturnCode::kOk);
+  EXPECT_TRUE(macho->is_thin_64());
+  EXPECT_EQ(macho->filetype(), static_cast<uint32_t>(MH_EXECUTE));
+
+  ASSERT_EQ(load(make_header64(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL, MH_DYLIB),
+                 macho),
+            ReturnCode::kOk);
+  EXPECT_TRUE(macho->is_thin_64());
+  EXPECT_EQ(macho->filetype(), static_cast<uint32_t>(MH_DYLIB));
+}
+
+TEST_F(MachOLoadCommandsTest, SkipsLoadCommandsOfOtherFiles) {
+  for (const Bytes& data :
+       {make_fat({make_signed_macho()}),
+        make_header32(CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7)}) {
+    MachO::Ptr macho;
+    ASSERT_EQ(load(data, macho), ReturnCode::kOk);
+    EXPECT_FALSE(macho->is_thin_64());
+    EXPECT_FALSE(macho->filetype().has_value());
+    EXPECT_FALSE(macho->code_signature_command().has_value());
+    EXPECT_FALSE(macho->linkedit_command().has_value());
+    EXPECT_FALSE(macho->encrypted());
+  }
+}
+
+TEST_F(MachOLoadCommandsTest, ReportsEncryption) {
+  struct Case {
+    std::vector<uint32_t> cryptids;
+    bool encrypted;
+  };
+  // A later unencrypted range must not hide an earlier encrypted one
+  for (const Case& c : std::vector<Case>{{{}, false},
+                                         {{0}, false},
+                                         {{1}, true},
+                                         {{1, 0}, true},
+                                         {{0, 1}, true}}) {
+    MachO::Ptr macho;
+    ASSERT_EQ(load(make_encrypted_macho(c.cryptids), macho), ReturnCode::kOk);
+    EXPECT_EQ(macho->encrypted(), c.encrypted)
+        << c.cryptids.size() << " encryption commands";
+  }
+}
+
+TEST_F(MachOLoadCommandsTest, FailsForUndersizedEncryptionCommand) {
+  Bytes data = make_encrypted_macho({1});
+  load_command cmd = get<load_command>(data, sizeof(mach_header_64));
+  cmd.cmdsize = sizeof(load_command);
+  put(data, sizeof(mach_header_64), cmd);
+
+  MachO::Ptr macho;
+  EXPECT_EQ(load(data, macho), ReturnCode::kErrCommon);
+}
+
+// from_bytes
+
+TEST_F(MachOLoadTest, FromBytesMatchesLoad) {
+  Bytes data = make_signed_macho();
+  MachO::Ptr macho;
+  ASSERT_EQ(MachO::from_bytes(data, macho), ReturnCode::kOk);
+  EXPECT_TRUE(macho->data() == data);
+  EXPECT_TRUE(macho->is_thin_64());
+
+  MachO::Ptr empty;
+  EXPECT_EQ(MachO::from_bytes({}, empty), ReturnCode::kErrCommon);
+  EXPECT_EQ(empty, nullptr);
+}
+
 // find_slice
 
 class MachOFindSliceFatTest : public MachOTest {
@@ -677,12 +776,9 @@ TEST_F(MachOFindSliceTest, FindsSliceOfThinFile) {
 
 // find_preferred_slice (results depend on the host CPU)
 
-TEST_F(MachOFindPreferredSliceTest, PicksSliceForHostCpuType) {
-  cpu_type_t host_cputype;
-  cpu_subtype_t host_cpusubtype;
-  ASSERT_TRUE(host_cpu_type(host_cputype, host_cpusubtype));
-  if (host_cputype != CPU_TYPE_ARM64 && host_cputype != CPU_TYPE_X86_64) {
-    GTEST_SKIP() << "unsupported host cputype " << host_cputype;
+TEST_F(MachOFindPreferredSliceTest, PicksArm64SliceOnArm64Host) {
+  if (!host_is_arm64()) {
+    GTEST_SKIP() << "host isn't arm64";
   }
 
   MachO::Ptr macho;
@@ -694,7 +790,39 @@ TEST_F(MachOFindPreferredSliceTest, PicksSliceForHostCpuType) {
 
   auto slice = macho->find_preferred_slice();
   ASSERT_TRUE(slice.has_value());
-  EXPECT_EQ(slice->cputype, host_cputype);
+  EXPECT_EQ(slice->offset, fat_slice_offset(1));
+}
+
+TEST_F(MachOFindPreferredSliceTest, ReturnsNulloptOnOtherHosts) {
+  if (host_is_arm64()) {
+    GTEST_SKIP() << "host is arm64";
+  }
+
+  MachO::Ptr macho;
+  ASSERT_EQ(
+      load(make_fat({make_header64(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL),
+                     make_header64(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL)}),
+           macho),
+      ReturnCode::kOk);
+
+  EXPECT_FALSE(macho->find_preferred_slice().has_value());
+}
+
+TEST_F(MachOFindPreferredSliceTest, PrefersArm64V8ToArm64) {
+  if (!host_is_arm64()) {
+    GTEST_SKIP() << "host isn't arm64";
+  }
+
+  MachO::Ptr macho;
+  ASSERT_EQ(
+      load(make_fat({make_header64(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL),
+                     make_header64(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_V8)}),
+           macho),
+      ReturnCode::kOk);
+
+  auto slice = macho->find_preferred_slice();
+  ASSERT_TRUE(slice.has_value());
+  EXPECT_EQ(slice->offset, fat_slice_offset(1));
 }
 
 TEST_F(MachOFindPreferredSliceTest, ReturnsNulloptWhenNoSliceRunsOnHost) {
@@ -745,6 +873,92 @@ TEST_F(MachOFindPreferredSliceTest, Arm64eHostFallsBackToArm64) {
   ASSERT_TRUE(slice.has_value());
   EXPECT_EQ(slice->offset, fat_slice_offset(1));
   EXPECT_EQ(slice->cpusubtype, CPU_SUBTYPE_ARM64_ALL);
+}
+
+TEST_F(MachOFindPreferredSliceTest, NewAbiHostLoadsOldAbiLibrary) {
+  if (!host_is_arm64e() || !host_uses_arm64e_abi_v2()) {
+    GTEST_SKIP() << "host isn't arm64e with the new ABI";
+  }
+
+  // Only an old-ABI executable is refused; an old-ABI library still loads
+  MachO::Ptr macho;
+  ASSERT_EQ(load(make_fat({make_header64(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64E,
+                                         MH_DYLIB),
+                           make_header64(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL,
+                                         MH_DYLIB)}),
+                 macho),
+            ReturnCode::kOk);
+
+  auto slice = macho->find_preferred_slice();
+  ASSERT_TRUE(slice.has_value());
+  EXPECT_EQ(slice->offset, fat_slice_offset(0));
+}
+
+// find_arm64_slice (host independent)
+
+TEST_F(MachOFindArm64SliceTest, PrefersV8ThenArm64ThenArm64e) {
+  std::vector<Bytes> slices = {
+      make_header64(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL),
+      make_header64(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64E),
+      make_header64(CPU_TYPE_ARM64, kArm64eAbiV2),
+      make_header64(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_ALL),
+      make_header64(CPU_TYPE_ARM64, CPU_SUBTYPE_ARM64_V8),
+  };
+  // Drop the best slice each round; the next best one must be picked
+  while (slices.size() > 1) {
+    MachO::Ptr macho;
+    ASSERT_EQ(load(make_fat(slices), macho), ReturnCode::kOk);
+    auto slice = macho->find_arm64_slice();
+    ASSERT_TRUE(slice.has_value()) << slices.size() << " slices";
+    EXPECT_EQ(slice->offset, fat_slice_offset(slices.size() - 1))
+        << slices.size() << " slices";
+    slices.pop_back();
+  }
+}
+
+TEST_F(MachOFindArm64SliceTest, ReturnsNulloptWithoutArm64Slice) {
+  MachO::Ptr macho;
+  ASSERT_EQ(
+      load(make_fat({make_header64(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL),
+                     make_header32(CPU_TYPE_ARM, CPU_SUBTYPE_ARM_V7)}),
+           macho),
+      ReturnCode::kOk);
+  EXPECT_FALSE(macho->find_arm64_slice().has_value());
+}
+
+// extract_slice
+
+TEST_F(MachOExtractSliceTest, ExtractsThinSlice) {
+  Bytes thin = make_signed_macho();
+  MachO::Ptr fat;
+  ASSERT_EQ(
+      load(make_fat({make_header64(CPU_TYPE_X86_64, CPU_SUBTYPE_X86_64_ALL),
+                     thin}),
+           fat),
+      ReturnCode::kOk);
+  ASSERT_EQ(fat->get_slices().size(), 2u);
+
+  MachO::Ptr macho;
+  ASSERT_EQ(fat->extract_slice(fat->get_slices()[1], macho), ReturnCode::kOk);
+  EXPECT_TRUE(macho->data() == thin);
+  EXPECT_TRUE(macho->is_thin_64());
+  ASSERT_EQ(macho->get_slices().size(), 1u);
+  EXPECT_EQ(macho->get_slices()[0].offset, 0u);
+
+  size_t offset = 0, size = 0;
+  ASSERT_EQ(macho->get_signature_range(offset, size), ReturnCode::kOk);
+  EXPECT_EQ(offset, kSignatureOffset);
+}
+
+TEST_F(MachOExtractSliceTest, FailsForSliceOutsideFile) {
+  MachO::Ptr fat;
+  ASSERT_EQ(load(make_fat({make_signed_macho()}), fat), ReturnCode::kOk);
+  MachOSlice slice = fat->get_slices()[0];
+  slice.size = fat->data().size();
+
+  MachO::Ptr macho;
+  EXPECT_EQ(fat->extract_slice(slice, macho), ReturnCode::kErrCommon);
+  EXPECT_EQ(macho, nullptr);
 }
 
 // get_signature_range
@@ -1088,16 +1302,10 @@ TEST_F(MachOUpdateCodeSignatureTest, FillsResizedRange) {
 
 // save
 
-TEST_F(MachOSaveTest, FailsForNullMachO) {
-  std::string filepath = path("output");
-  EXPECT_EQ(MachO::save(filepath, nullptr), ReturnCode::kErrCommon);
-  EXPECT_FALSE(std::filesystem::exists(filepath));
-}
-
 TEST_F(MachOSaveTest, FailsForUnwritablePath) {
   MachO::Ptr macho;
   ASSERT_EQ(load(make_signed_macho(), macho), ReturnCode::kOk);
-  EXPECT_EQ(MachO::save(path("missing/output"), macho), ReturnCode::kErrCommon);
+  EXPECT_EQ(macho->save(path("missing/output")), ReturnCode::kErrCommon);
 }
 
 TEST_F(MachOSaveTest, RoundTripsUnchanged) {
@@ -1118,7 +1326,7 @@ TEST_F(MachOSaveTest, TruncatesExistingFile) {
   ASSERT_EQ(load(data, macho), ReturnCode::kOk);
 
   std::string filepath = write_file(Bytes(data.size() * 2, 0xff), "output");
-  ASSERT_EQ(MachO::save(filepath, macho), ReturnCode::kOk);
+  ASSERT_EQ(macho->save(filepath), ReturnCode::kOk);
   EXPECT_TRUE(read_file(filepath) == data);
 }
 
@@ -1175,7 +1383,7 @@ TEST_F(MachOSampleTest, ReplacesSignature) {
 
   // The saved file loads again with the new signature in place.
   std::string resigned = path("resigned");
-  ASSERT_EQ(MachO::save(resigned, macho), ReturnCode::kOk);
+  ASSERT_EQ(macho->save(resigned), ReturnCode::kOk);
   MachO::Ptr reloaded;
   ASSERT_EQ(MachO::load(resigned, reloaded), ReturnCode::kOk);
   size_t offset = 0, size = 0;

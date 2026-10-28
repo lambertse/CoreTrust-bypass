@@ -6,6 +6,7 @@
 #include <openssl/err.h>
 #include <openssl/pem.h>
 
+#include <TargetConditionals.h>
 #include <mach-o/loader.h>
 
 #include <algorithm>
@@ -230,6 +231,41 @@ void warn_if_no_entitlements(const SuperBlob& superblob, uint32_t filetype) {
   }
 }
 
+// Decodes the real CodeDirectory (slot 0x1000). find_blob hands back a copy,
+// so an edited CodeDirectory has to go back through store_real_cd
+ReturnCode load_real_cd(const SuperBlob& superblob,
+                        std::optional<CodeDirectory>& real_cd) {
+  std::optional<Blob> blob =
+      superblob.find_blob(SlotType::kAlternateCodeDirectories);
+  if (!blob.has_value()) {
+    return ReturnCode::kErrCodeDirMissing;
+  }
+  real_cd = CodeDirectory::deserialize(std::move(blob->data));
+  if (!real_cd.has_value()) {
+    return ReturnCode::kErrCodeDirMalformed;
+  }
+  return ReturnCode::kOk;
+}
+
+ReturnCode store_real_cd(SuperBlob& superblob, const CodeDirectory& real_cd) {
+  if (failed(superblob.replace_blob(
+          {SlotType::kAlternateCodeDirectories, real_cd.data()}))) {
+    return ReturnCode::kErrCodeDirMissing;
+  }
+  return ReturnCode::kOk;
+}
+
+// The slice to re-sign out of a universal binary: the one this host would
+// run or, when preparing binaries on a Mac, the best arm64 slice for a device
+std::optional<MachOSlice> pick_slice(const MachO& macho) {
+  if (auto slice = macho.find_preferred_slice()) return slice;
+#if TARGET_OS_OSX
+  return macho.find_arm64_slice();
+#else
+  return std::nullopt;
+#endif
+}
+
 }  // namespace
 
 namespace detail {
@@ -263,8 +299,31 @@ ReturnCode compute_cdhashes(const SuperBlob& superblob, Bytes& sha1_cdhash,
   return ReturnCode::kOk;
 }
 
+ReturnCode select_slice(MachO::Ptr& macho) {
+  if (macho->is_thin_64()) {
+    return ReturnCode::kOk;
+  }
+  std::optional<MachOSlice> slice = pick_slice(*macho);
+  MachO::Ptr thin;
+  if (!slice.has_value() || failed(macho->extract_slice(*slice, thin)) ||
+      !thin->is_thin_64()) {
+    fprintf(stderr, "Error: no arm64 slice to re-sign in this binary\n");
+    return ReturnCode::kErrMachoNoUsableSlice;
+  }
+  printf("Using the slice at offset 0x%llx (cputype 0x%x, cpusubtype 0x%x)\n",
+         static_cast<unsigned long long>(slice->offset),
+         static_cast<unsigned>(slice->cputype),
+         static_cast<unsigned>(slice->cpusubtype));
+  macho = std::move(thin);
+  return ReturnCode::kOk;
+}
+
 ReturnCode check_supported_macho(const MachO& macho) {
-  if (macho.encrypted().value_or(false)) {
+  if (!macho.is_thin_64()) {
+    fprintf(stderr, "Error: a thin 64-bit Mach-O is required\n");
+    return ReturnCode::kErrMachoNoUsableSlice;
+  }
+  if (macho.encrypted()) {
     fprintf(stderr, "Error: MachO is encrypted, please use a decrypted app\n");
     return ReturnCode::kErrMachoEncrypted;
   }
@@ -289,8 +348,6 @@ ReturnCode load_code_signature(const MachO& macho, SuperBlob& superblob,
     return ReturnCode::kErrNoCodeSignature;
   }
 
-  // data() returns a copy; bind it once so both iterators point into the same
-  // buffer
   const Bytes& file = macho.data();
   Bytes code_signature_data(file.begin() + code_signature_offset,
                             file.begin() + code_signature_offset +
@@ -382,16 +439,9 @@ ReturnCode swap_in_app_store_cd(SuperBlob& superblob,
 ReturnCode adopt_app_store_team_id(SuperBlob& superblob,
                                    const std::string& app_store_team_id) {
   printf("Updating TeamID...\n");
-  std::optional<Blob> real_cd_blob =
-      superblob.find_blob(SlotType::kAlternateCodeDirectories);
-  if (!real_cd_blob.has_value()) {
-    return ReturnCode::kErrCodeDirMissing;
-  }
-  std::optional<CodeDirectory> real_cd =
-      CodeDirectory::deserialize(real_cd_blob->data);
-  if (!real_cd.has_value()) {
-    return ReturnCode::kErrCodeDirMalformed;
-  }
+  std::optional<CodeDirectory> real_cd;
+  ReturnCode rc = load_real_cd(superblob, real_cd);
+  if (failed(rc)) return rc;
 
   if (failed(real_cd->set_team_id(app_store_team_id))) {
     fprintf(stderr, "Error: failed to set Team ID\n");
@@ -400,12 +450,7 @@ ReturnCode adopt_app_store_team_id(SuperBlob& superblob,
   // Clear every flag (notably the adhoc flag in bit 1) so the two code
   // directories match
   real_cd->set_flags(0);
-
-  // find_blob handed back a copy, so write the edited CodeDirectory back
-  if (failed(superblob.replace_blob(
-          {SlotType::kAlternateCodeDirectories, real_cd->data()}))) {
-    return ReturnCode::kErrCodeDirMissing;
-  }
+  if (failed(rc = store_real_cd(superblob, *real_cd))) return rc;
   printf("TeamID set to %s!\n", app_store_team_id.c_str());
   return ReturnCode::kOk;
 }
@@ -413,10 +458,10 @@ ReturnCode adopt_app_store_team_id(SuperBlob& superblob,
 // Signs in two passes. The first only sizes the SuperBlob so the load commands
 // can be resized. That changes the first page, so the page hashes, and with
 // them the real cdhash, are updated before the final signing. Reports the
-// encoded SuperBlob, which fills the resized signature exactly, in
-// `signed_superblob`
+// encoded SuperBlob, the same size as the first-pass one the range was sized
+// for, in `signed_superblob`
 ReturnCode sign_superblob(MachO& macho, SuperBlob& superblob,
-                          uint32_t code_signature_offset,
+                          size_t code_signature_offset,
                           Bytes& signed_superblob) {
   printf("Doing initial signing to calculate size...\n");
   ReturnCode rc = update_signature_blob(superblob);
@@ -429,8 +474,7 @@ ReturnCode sign_superblob(MachO& macho, SuperBlob& superblob,
   Bytes unsigned_superblob = superblob.serialize();
 
   printf("Updating load commands...\n");
-  if (failed(rc = macho.resize_code_signature(
-                 static_cast<uint32_t>(unsigned_superblob.size())))) {
+  if (failed(rc = macho.resize_code_signature(unsigned_superblob.size()))) {
     fprintf(stderr, "Error: failed to update load commands\n");
     return rc;
   }
@@ -438,27 +482,16 @@ ReturnCode sign_superblob(MachO& macho, SuperBlob& superblob,
   // The page hashes cover everything before the signature, which now includes
   // the updated load commands
   printf("Updating code slot hashes...\n");
-  std::optional<Blob> real_cd_blob =
-      superblob.find_blob(SlotType::kAlternateCodeDirectories);
-  if (!real_cd_blob.has_value()) {
-    return ReturnCode::kErrCodeDirMissing;
-  }
-  std::optional<CodeDirectory> real_cd =
-      CodeDirectory::deserialize(real_cd_blob->data);
-  if (!real_cd.has_value()) {
-    return ReturnCode::kErrCodeDirMalformed;
-  }
-  const Bytes& file = macho.data();
-  if (failed(real_cd->update_code_slots(file.data(), code_signature_offset))) {
+  std::optional<CodeDirectory> real_cd;
+  if (failed(rc = load_real_cd(superblob, real_cd))) return rc;
+  if (failed(real_cd->update_code_slots(macho.data().data(),
+                                        code_signature_offset))) {
     fprintf(stderr, "Error: failed to update code slot hashes\n");
     return ReturnCode::kErrUpdateCodeSlots;
   }
-  // find_blob handed back a copy, so write the rehashed CodeDirectory back
-  // before re-signing, otherwise the final cdhash covers the stale hashes
-  if (failed(superblob.replace_blob(
-          {SlotType::kAlternateCodeDirectories, real_cd->data()}))) {
-    return ReturnCode::kErrCodeDirMissing;
-  }
+  // Store it before re-signing, otherwise the final cdhash covers the stale
+  // hashes
+  if (failed(rc = store_real_cd(superblob, *real_cd))) return rc;
 
   printf("Signing binary...\n");
   if (failed(rc = update_signature_blob(superblob))) {
@@ -500,12 +533,14 @@ ReturnCode CoreTrustBypassImpl::bypass() const {
   MachO::Ptr macho;
   ReturnCode rc = MachO::load(path_, macho);
   if (failed(rc)) {
-    fprintf(stderr,
-            "Error: failed to parse MachO, a thin 64-bit MachO is required\n");
+    fprintf(stderr, "Error: failed to parse MachO\n");
     return rc;
   }
 
-  if (failed(rc = detail::check_supported_macho(*macho))) {
+  // The output is always thin: a universal input is replaced by the slice
+  // that gets re-signed
+  if (failed(rc = detail::select_slice(macho)) ||
+      failed(rc = detail::check_supported_macho(*macho))) {
     return rc;
   }
 
@@ -526,16 +561,15 @@ ReturnCode CoreTrustBypassImpl::bypass() const {
   }
 
   Bytes new_superblob;
-  if (failed(rc = detail::sign_superblob(
-                 *macho, superblob,
-                 static_cast<uint32_t>(code_signature_offset), new_superblob))) {
+  if (failed(rc = detail::sign_superblob(*macho, superblob,
+                                         code_signature_offset,
+                                         new_superblob))) {
     return rc;
   }
 
   printf("Writing superblob to MachO...\n");
-  // update_code_signature (size <= reserved, tail zero-filled) rather than
-  // write_code_signature (exact-size), so a code signature with trailing
-  // padding in __LINKEDIT still fits the region resize_code_signature reserved
+  // The reserved range also covers the padding that followed the old
+  // SuperBlob, so the new one fills its start and the rest is zeroed
   if (failed(rc = macho->update_code_signature(new_superblob)) ||
       failed(rc = macho->save(path_))) {
     fprintf(stderr, "Error: failed to write MachO\n");

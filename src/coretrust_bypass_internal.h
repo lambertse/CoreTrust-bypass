@@ -20,8 +20,14 @@ using macho::Bytes;
 using macho::MachO;
 using macho::SuperBlob;
 
-// Rejects file types the bypass cannot handle: kErrMachoEncrypted for an
-// encrypted binary, kErrMachoFiletype for an object or dSYM file.
+// Replaces a universal `macho` with the thin slice to re-sign: the one the
+// host would run or, on macOS, the best arm64 slice. A thin 64-bit Mach-O is
+// kept as is. kErrMachoNoUsableSlice if there is no such slice.
+ReturnCode select_slice(MachO::Ptr& macho);
+
+// Rejects inputs the bypass cannot handle: kErrMachoNoUsableSlice unless it is
+// a thin 64-bit Mach-O, kErrMachoEncrypted for an encrypted binary,
+// kErrMachoFiletype for an object or dSYM file.
 ReturnCode check_supported_macho(const MachO& macho);
 
 // Decodes the embedded code signature into `superblob` and reports its file
@@ -46,10 +52,10 @@ ReturnCode adopt_app_store_team_id(SuperBlob& superblob,
                                    const std::string& app_store_team_id);
 
 // Two-pass signing: size the SuperBlob, resize the load commands, rehash the
-// pages that moved and sign. Reports the final encoded SuperBlob, sized to fill
-// the reserved signature exactly, in `signed_superblob`.
+// pages that moved and sign. Reports the final encoded SuperBlob, the same
+// size as the first-pass one the range was sized for, in `signed_superblob`.
 ReturnCode sign_superblob(MachO& macho, SuperBlob& superblob,
-                          uint32_t code_signature_offset,
+                          size_t code_signature_offset,
                           Bytes& signed_superblob);
 
 }  // namespace ct_bypass::detail

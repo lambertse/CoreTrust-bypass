@@ -44,21 +44,37 @@ hash. The bypass presents:
 A **second** signer (the TrollStore CA) is then added to the same CMS. Its signed
 attributes list the cdhashes of both CodeDirectories, so the CMS vouches for our
 real code while Apple's untouched signer keeps the signature acceptable. Both
-CodeDirectories must agree on the Team ID, which is why step 5 copies it across.
+CodeDirectories must agree on the Team ID, which is why step 6 copies it across.
 
 ## The steps (mapping to `CoreTrustBypassImpl::bypass()`)
 
-1. **Load the Mach-O** — `MachO::load`. A thin 64-bit Mach-O is required.
+1. **Load the Mach-O** — `MachO::load`. Thin and universal files both load.
 
-2. **Reject unsupported inputs** — `detail::check_supported_macho`. Encrypted
-   binaries (`kErrMachoEncrypted`) and object/dSYM files (`kErrMachoFiletype`)
-   can't be signed this way.
+2. **Pick the slice** — `detail::select_slice`. A thin 64-bit Mach-O is used
+   as is. A universal binary is narrowed to one slice, picked the way
+   fastPathSign picks it:
+   - `MachO::find_preferred_slice`: the slice this host's kernel would run.
+     arm64e with the host's ABI comes first; an old-ABI arm64e executable is
+     refused on a new-ABI host, while an old-ABI library is still accepted.
+     arm64v8 comes before plain arm64.
+   - On macOS only, if that finds nothing: `MachO::find_arm64_slice`, which
+     picks arm64v8, then arm64, then arm64e (new ABI), then arm64e (old ABI).
+     This is how binaries are prepared for a device on a Mac, including an
+     Intel Mac.
 
-3. **Decode the existing signature** — `detail::load_code_signature` reads the
+   The output is that thin slice, so a universal input is replaced by it.
+   With no usable slice the result is `kErrMachoNoUsableSlice`.
+
+3. **Reject unsupported inputs** — `detail::check_supported_macho`. The input
+   must be a thin 64-bit Mach-O (`kErrMachoNoUsableSlice`). Encrypted binaries
+   (`kErrMachoEncrypted`) and object/dSYM files (`kErrMachoFiletype`) can't be
+   signed this way.
+
+4. **Decode the existing signature** — `detail::load_code_signature` reads the
    `LC_CODE_SIGNATURE` range and parses it into a `SuperBlob`. The binary must
    already be at least ad-hoc signed (`kErrNoCodeSignature` / `kErrDecodeSuperBlob`).
 
-4. **Swap in the App Store CodeDirectory** — `detail::swap_in_app_store_cd`:
+5. **Swap in the App Store CodeDirectory** — `detail::swap_in_app_store_cd`:
    - Pick the **real** CodeDirectory to keep: the SHA-256 alternate if the
      binary already has one, otherwise the main one. It must be SHA-256
      (`kErrCodeDirNotSha256`).
@@ -67,25 +83,27 @@ CodeDirectories must agree on the Team ID, which is why step 5 copies it across.
      **Team ID**.
    - Drop any existing signature blob.
 
-5. **Adopt the App Store Team ID** — `detail::adopt_app_store_team_id` rewrites
+6. **Adopt the App Store Team ID** — `detail::adopt_app_store_team_id` rewrites
    the real (slot `0x1000`) CodeDirectory so its Team ID matches the App Store
    one and clears its flags (notably the `adhoc` flag). Both CodeDirectories
    must agree on the Team ID for CoreTrust to accept them.
 
-6. **Sign in two passes** — `detail::sign_superblob`. Signing changes the size of
+7. **Sign in two passes** — `detail::sign_superblob`. Signing changes the size of
    the SuperBlob, which changes the load commands, which changes page 0 — and
    page 0's hash is one of the code slots, so the cdhash would shift under us.
    To keep everything consistent:
    1. Build the signature once just to learn the final size.
-   2. `resize_code_signature` to reserve exactly that many bytes (this edits the
-      load commands).
+   2. `resize_code_signature` to reserve that many bytes (this edits the load
+      commands). Any padding that followed the old SuperBlob stays after the
+      new one.
    3. Re-hash the code slots over the now-final first page
       (`update_code_slots`) and write the updated CodeDirectory back.
-   4. Build the signature again for real; assert the encoded SuperBlob is exactly
-      the reserved size (`kErrSuperBlobSizeMismatch`).
+   4. Build the signature again for real; assert the encoded SuperBlob is
+      exactly as large as in the first pass (`kErrSuperBlobSizeMismatch`).
 
-7. **Write it back** — `write_code_signature` splices the new SuperBlob into the
-   reserved region and `save` flushes the file to disk.
+8. **Write it back** — `update_code_signature` writes the new SuperBlob at
+   the start of the signature range and zero-fills the rest. `save` then
+   writes the file to disk.
 
 ## The signature itself (`update_signature_blob`)
 
@@ -104,12 +122,34 @@ CodeDirectories must agree on the Team ID, which is why step 5 copies it across.
 5. `CMS_SignerInfo_sign`, encode to DER, and wrap it in a `kBlobWrapper` blob in
    slot `0x10000`.
 
+## Where the signature ends
+
+`LC_CODE_SIGNATURE.datasize` is set to cover the new SuperBlob **plus** the
+padding that followed the old one, so every byte of `__LINKEDIT` stays inside
+a load command. fastPathSign instead sets `datasize` to the SuperBlob alone
+and leaves the padding outside it.
+
+The kernel is expected to accept either, since it reads the SuperBlob's own
+length from its header and only needs it to fit within `datasize` — but that,
+and whether this matches how `codesign` lays a signature out, is **not yet
+confirmed on a Mac or a device**. A byte-level comparison against
+fastPathSign's output is expected to differ in `datasize` and the zero bytes
+it covers, plus the CMS `signingTime` and the new signer's signature value,
+which are not reproducible between runs.
+
+To confirm the `datasize` convention on a Mac: ad-hoc sign any binary with
+`codesign`, then `otool -l` it and compare `dataoff + datasize` against both
+the file size and the SuperBlob length stored at `dataoff + 4`.
+
 ## Why the blob order matters
 
 `SuperBlob::serialize()` emits the index in **ascending slot order**
 (`0`, `5`/`7`, `0x1000`, `0x10000`). CoreTrust selects a CodeDirectory by slot
-number rather than by position, but emitting the slots sorted reproduces exactly
-what `codesign` writes and matches the reference implementation.
+number rather than by position, so the order is not what makes the bypass
+work; emitting the slots sorted is how `codesign` writes them. For the slots
+this bypass produces the order is the same as fastPathSign's, which appends
+the real CodeDirectory and the signature. The two can differ only for an input
+that already carries extra slots above `0x1000` (e.g. `0x1001`–`0x1004`).
 
 ## Error codes
 

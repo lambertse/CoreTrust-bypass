@@ -1,8 +1,7 @@
 #include "utils.h"
 
-#include <unistd.h>
-
 #include <filesystem>
+#include <system_error>
 #include <vector>
 
 namespace ct_bypass::utils {
@@ -25,7 +24,10 @@ std::string cf_description(CFTypeRef obj) {
 }
 
 CFPtr<CFURLRef> create_file_url(const std::string& path) {
-  const auto abs = std::filesystem::absolute(path).string();
+  // Without a working directory the path is used as given
+  std::error_code ec;
+  std::string abs = std::filesystem::absolute(path, ec).string();
+  if (ec) abs = path;
 
   return CFPtr<CFURLRef>(CFURLCreateFromFileSystemRepresentation(
       kCFAllocatorDefault, reinterpret_cast<const UInt8*>(abs.c_str()),

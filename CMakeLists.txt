@@ -11,7 +11,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
 find_library(SECURITY_FRAMEWORK Security REQUIRED)
 
-# libcrypto (EVP digests): prefer a local OpenSSL, otherwise build LibreSSL.
+# libcrypto (EVP digests, CMS signing, PEM): prefer a local OpenSSL, otherwise
+# build LibreSSL.
 option(CT_BYPASS_FETCH_LIBCRYPTO "Build LibreSSL if no local OpenSSL is found" ON)
 
 # Apple's SDK ships no OpenSSL headers; point FindOpenSSL at Homebrew's.
